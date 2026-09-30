@@ -1,42 +1,4 @@
 <!DOCTYPE html>
-<!--
-  STANDALONE QR SCANNER - PERA MPC Members Day
-  =============================================
-  WHY THIS FILE EXISTS (read this first):
-
-  Google Apps Script serves every Web App page (Index.html in this project)
-  inside its own sandboxed iframe - this is a fixed part of the platform,
-  not a setting this project can turn off. Modern browsers only allow a
-  page to use the camera (getUserMedia) if the Permissions-Policy of every
-  frame in the chain allows it. Apps Script's own wrapper iframe does not
-  delegate the "camera" permission to the page it serves, on at least some
-  deployments/devices - the app's own in-app camera scanner includes a
-  "Camera not working?" diagnostics panel that reports this directly
-  (look for "Camera allowed by page policy: NO").
-
-  This file sidesteps that limitation completely: it is a PLAIN, ORDINARY
-  web page - no Apps Script, no iframe, nothing wrapping it - so the
-  camera works exactly like it would on any other website. It talks to the
-  SAME Google Sheet as the main app, over plain HTTP (fetch), by calling
-  the doGet/doPost JSON endpoints added to Code.gs for this exact purpose.
-
-  HOW TO USE THIS FILE
-  1. Deploy the Apps Script project as a Web App (Deploy > Manage
-     deployments > Web app), Execute as: Me, Who has access: Anyone.
-     Copy the /exec URL it gives you.
-  2. Paste that URL into APPS_SCRIPT_URL below, replacing the placeholder.
-  3. Host this single file somewhere with a real https:// URL. The easiest
-     free option is GitHub Pages:
-       a. Create a new PUBLIC GitHub repository.
-       b. Upload this file, named exactly index.html, to that repo.
-       c. Repo Settings > Pages > Source: Deploy from branch > main /
-          (root) > Save. GitHub gives you a URL like
-          https://yourname.github.io/yourrepo/ within a minute or two.
-     (Firebase Hosting, Netlify, or Cloud Storage static hosting all work
-     the same way if you already use one of those instead.)
-  4. Open that github.io (or equivalent) link on the staff phone. The
-     camera permission prompt will work normally there - allow it once.
--->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -132,11 +94,11 @@ h1{font-size:22px;margin:6px 0 2px}
 </div>
 
 <script>
-// ======================= CONFIGURE THIS ONE LINE =======================
+// ======================= CONFIGURED URL =======================
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwIVg8jhttHcgsYarb1JemuPiKBFDYibl2pyPrp4wz-7LKKIwMx1CROC-DHU24yNuoUJg/exec";
-// =========================================================================
+// ==============================================================
 
-if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("https://crasheredbanz2012-beep.github.io/qr-scanner/") !== -1) {
+if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("PASTE_YOUR") !== -1) {
   document.getElementById("configWarn").classList.remove("hidden");
 }
 
@@ -146,8 +108,6 @@ const QR_RESCAN_COOLDOWN_MS = 4000;
 function esc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function escAttr(v) { return esc(v).replace(/'/g, "&#39;"); }
 
-// GET for reads (search) - a plain fetch with no custom headers is a CORS
-// "simple request", which Apps Script answers without needing a preflight.
 async function apiGet(action, params) {
   const qs = new URLSearchParams(Object.assign({ api: action }, params || {})).toString();
   const res = await fetch(APPS_SCRIPT_URL + "?" + qs);
@@ -156,11 +116,6 @@ async function apiGet(action, params) {
   return json.data;
 }
 
-// POST for writes (check-in, representative) - Content-Type text/plain is
-// deliberate: it keeps this a CORS "simple request" too (application/json
-// would trigger a preflight OPTIONS call that Apps Script does not
-// handle), while the BODY TEXT itself is still ordinary JSON, decoded
-// manually by doPost() in Code.gs.
 async function apiPost(action, params) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -234,28 +189,26 @@ async function startQrScan() {
         if (state.qrScanning) setQrStatus("Point camera at the next QR code", "scanning");
       }
     };
-  const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
-state.qrScanner.start({ facingMode: "exact" == "environment" ? "environment" : { exact: "environment" } }, scanConfig, onDecode);
+    const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
 
     if (!state.cameraList) {
       try { state.cameraList = await Html5Qrcode.getCameras(); } catch (e) { state.cameraList = []; }
       document.getElementById("qrSwitchBtn").classList.toggle("hidden", !(state.cameraList && state.cameraList.length > 1));
     }
 
-    let lastErr = null;
-    const cams = state.cameraList || [];
-    const attempts = [{ facingMode: { ideal: "environment" } }];
-    if (cams[state.cameraIndex]) attempts.push(cams[state.cameraIndex].id);
-    attempts.push({ facingMode: "user" });
-    for (const cam of attempts) {
-      try {
-        state.qrScanner = new Html5Qrcode("qrReader");
-        await state.qrScanner.start(cam, scanConfig, onDecode, () => {});
-        lastErr = null;
-        break;
-      } catch (e) { lastErr = e; }
+    state.qrScanner = new Html5Qrcode("qrReader");
+
+    try {
+      await state.qrScanner.start({ facingMode: "environment" }, scanConfig, onDecode, () => {});
+    } catch (e) {
+      const cams = state.cameraList || [];
+      if (cams[state.cameraIndex]) {
+        await state.qrScanner.start(cams[state.cameraIndex].id, scanConfig, onDecode, () => {});
+      } else {
+        await state.qrScanner.start({ facingMode: "user" }, scanConfig, onDecode, () => {});
+      }
     }
-    if (lastErr) throw lastErr;
+
     document.getElementById("qrScanFrame").classList.add("active");
     setQrStatus("Point camera at QR code", "scanning");
   } catch (err) {
