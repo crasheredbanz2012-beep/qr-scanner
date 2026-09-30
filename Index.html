@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<!--
+  STANDALONE QR SCANNER - PERA MPC Members Day
+  =============================================
+  WHY THIS FILE EXISTS (read this first):
+
+  Google Apps Script serves every Web App page (Index.html in this project)
+  inside its own sandboxed iframe - this is a fixed part of the platform,
+  not a setting this project can turn off. Modern browsers only allow a
+  page to use the camera (getUserMedia) if the Permissions-Policy of every
+  frame in the chain allows it. Apps Script's own wrapper iframe does not
+  delegate the "camera" permission to the page it serves, on at least some
+  deployments/devices - the app's own in-app camera scanner includes a
+  "Camera not working?" diagnostics panel that reports this directly
+  (look for "Camera allowed by page policy: NO").
+
+  This file sidesteps that limitation completely: it is a PLAIN, ORDINARY
+  web page - no Apps Script, no iframe, nothing wrapping it - so the
+  camera works exactly like it would on any other website. It talks to the
+  SAME Google Sheet as the main app, over plain HTTP (fetch), by calling
+  the doGet/doPost JSON endpoints added to Code.gs for this exact purpose.
+
+  HOW TO USE THIS FILE
+  1. Deploy the Apps Script project as a Web App (Deploy > Manage
+     deployments > Web app), Execute as: Me, Who has access: Anyone.
+     Copy the /exec URL it gives you.
+  2. Paste that URL into APPS_SCRIPT_URL below, replacing the placeholder.
+  3. Host this single file somewhere with a real https:// URL. The easiest
+     free option is GitHub Pages:
+       a. Create a new PUBLIC GitHub repository.
+       b. Upload this file, named exactly index.html, to that repo.
+       c. Repo Settings > Pages > Source: Deploy from branch > main /
+          (root) > Save. GitHub gives you a URL like
+          https://yourname.github.io/yourrepo/ within a minute or two.
+     (Firebase Hosting, Netlify, or Cloud Storage static hosting all work
+     the same way if you already use one of those instead.)
+  4. Open that github.io (or equivalent) link on the staff phone. The
+     camera permission prompt will work normally there - allow it once.
+-->
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PERA MPC Members Day - Scanner</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+<style>
+:root{--primary:#204B5C;--primary-dark:#10151F;--accent:#B08D57;--bg:#F7F4EE;--muted:#5B6270;--border:#E4DDCF;--success:#4C7A5D;--warning:#A87B2C;--danger:#AE4A34;--shadow:0 6px 24px rgba(16,21,31,.08)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--primary-dark);font-family:'Segoe UI',Arial,sans-serif;min-height:100vh;padding:16px}
+.card{background:#fff;border:1px solid var(--border);border-radius:20px;box-shadow:var(--shadow);padding:24px;max-width:440px;margin:0 auto;position:relative}
+.card::before{content:"";position:absolute;top:0;left:20px;right:20px;height:3px;background:var(--accent);border-radius:0 0 4px 4px}
+h1{font-size:22px;margin:6px 0 2px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+.config-warn{background:#fbeceA;border:1px solid var(--danger);color:var(--danger);border-radius:10px;padding:12px;font-size:12.5px;margin-bottom:14px}
+.mode-tabs{display:flex;gap:8px;background:var(--bg);border-radius:12px;padding:4px;margin-bottom:16px}
+.mode-tab{flex:1;border:none;background:transparent;padding:10px;border-radius:9px;font-weight:700;font-size:13px;color:var(--muted);cursor:pointer;font-family:inherit}
+.mode-tab.active{background:#fff;color:var(--primary);box-shadow:0 2px 6px rgba(16,21,31,.08)}
+.hidden{display:none!important}
+.qr-reader{width:100%;border-radius:14px;overflow:hidden;background:#000;min-height:220px;margin-bottom:8px;position:relative;display:flex;align-items:center;justify-content:center}
+.qr-reader video{width:100%!important;height:100%!important;object-fit:cover}
+.qr-idle{color:#8a94a6;text-align:center;font-size:13px;position:absolute;z-index:1}
+.qr-idle.hidden{display:none}
+.qr-scan-frame{position:absolute;top:50%;left:50%;width:180px;height:180px;transform:translate(-50%,-50%);z-index:2;pointer-events:none;display:none}
+.qr-scan-frame.active{display:block}
+.qr-corner{position:absolute;width:28px;height:28px;border-color:#fff}
+.qr-corner-tl{top:0;left:0;border-top:4px solid;border-left:4px solid;border-radius:6px 0 0 0}
+.qr-corner-tr{top:0;right:0;border-top:4px solid;border-right:4px solid;border-radius:0 6px 0 0}
+.qr-corner-bl{bottom:0;left:0;border-bottom:4px solid;border-left:4px solid;border-radius:0 0 0 6px}
+.qr-corner-br{bottom:0;right:0;border-bottom:4px solid;border-right:4px solid;border-radius:0 0 6px 0}
+.qr-status{text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px}
+.qr-status.scanning{color:var(--primary)}
+.qr-status.detected{color:var(--success)}
+.qr-status.blocked{color:var(--danger)}
+.btn{border:none;border-radius:10px;padding:11px 16px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-ghost{background:transparent;color:var(--primary-dark);border:1px solid var(--border)}
+.btn-block{width:100%}
+.toolbar{display:flex;gap:8px;margin-bottom:10px}
+.toolbar .btn{flex:1}
+.hint{text-align:center;color:var(--muted);font-size:12px;margin:8px 0}
+.search-wrap{position:relative;margin-top:10px}
+.search-input{width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;font-family:inherit}
+.search-results{margin-top:8px;max-height:260px;overflow-y:auto}
+.search-result-item{padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:6px;cursor:pointer}
+.search-result-item:hover{border-color:var(--primary);background:#f2f6f7}
+.result{margin-top:16px;padding:16px;border-radius:12px;text-align:center;display:none}
+.result.ok{display:block;background:#eef5f0;border:1px solid var(--success);color:var(--success)}
+.result.error{display:block;background:#fbeceA;border:1px solid var(--danger);color:var(--danger)}
+.result-name{font-size:20px;font-weight:800;color:var(--primary-dark);display:block;margin-bottom:4px}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Members Day Scanner</h1>
+  <p class="sub">Standalone scanner - hosted outside Apps Script so the camera works normally.</p>
+
+  <div id="configWarn" class="config-warn hidden">
+    Set <code>APPS_SCRIPT_URL</code> near the top of this file's &lt;script&gt; to your deployed Web App /exec URL before using this page.
+  </div>
+
+  <div class="mode-tabs">
+    <button id="tabQr" class="mode-tab active" onclick="switchMode('qr')">Scan QR</button>
+    <button id="tabSearch" class="mode-tab" onclick="switchMode('search')">Search Name</button>
+  </div>
+
+  <div id="qrPane">
+    <div class="qr-reader" id="qrReader">
+      <div class="qr-idle" id="qrIdleLabel">Camera is off</div>
+      <div class="qr-scan-frame" id="qrScanFrame">
+        <div class="qr-corner qr-corner-tl"></div><div class="qr-corner qr-corner-tr"></div>
+        <div class="qr-corner qr-corner-bl"></div><div class="qr-corner qr-corner-br"></div>
+      </div>
+    </div>
+    <p class="qr-status" id="qrStatus">Camera is off.</p>
+    <div class="toolbar">
+      <button id="qrStartBtn" class="btn btn-primary" onclick="startQrScan()">Start Scanning</button>
+      <button id="qrSwitchBtn" class="btn btn-ghost hidden" onclick="switchCamera()">Switch Camera</button>
+    </div>
+    <p class="hint">Point the camera at the client's QR code. It keeps scanning - just point it at the next one after each check-in.</p>
+  </div>
+
+  <div id="searchPane" class="hidden">
+    <div class="search-wrap">
+      <input id="searchInput" class="search-input" type="text" placeholder="Type the client's name or ID..." oninput="onSearchInput()">
+    </div>
+    <div id="searchResults" class="search-results"></div>
+  </div>
+
+  <div id="checkinResult" class="result"></div>
+</div>
+
+<script>
+// ======================= CONFIGURE THIS ONE LINE =======================
+const APPS_SCRIPT_URL = "PASTE_YOUR_DEPLOYED_WEB_APP_EXEC_URL_HERE";
+// =========================================================================
+
+if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("PASTE_YOUR") !== -1) {
+  document.getElementById("configWarn").classList.remove("hidden");
+}
+
+const state = { qrScanner: null, qrScanning: false, qrProcessing: false, lastScannedCode: null, lastScannedAt: 0, cameraList: null, cameraIndex: 0, searchDebounce: null };
+const QR_RESCAN_COOLDOWN_MS = 4000;
+
+function esc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function escAttr(v) { return esc(v).replace(/'/g, "&#39;"); }
+
+// GET for reads (search) - a plain fetch with no custom headers is a CORS
+// "simple request", which Apps Script answers without needing a preflight.
+async function apiGet(action, params) {
+  const qs = new URLSearchParams(Object.assign({ api: action }, params || {})).toString();
+  const res = await fetch(APPS_SCRIPT_URL + "?" + qs);
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.message || "Request failed.");
+  return json.data;
+}
+
+// POST for writes (check-in, representative) - Content-Type text/plain is
+// deliberate: it keeps this a CORS "simple request" too (application/json
+// would trigger a preflight OPTIONS call that Apps Script does not
+// handle), while the BODY TEXT itself is still ordinary JSON, decoded
+// manually by doPost() in Code.gs.
+async function apiPost(action, params) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({ action: action }, params || {}))
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.message || "Request failed.");
+  return json.data;
+}
+
+function switchMode(mode) {
+  document.getElementById("tabQr").classList.toggle("active", mode === "qr");
+  document.getElementById("tabSearch").classList.toggle("active", mode === "search");
+  document.getElementById("qrPane").classList.toggle("hidden", mode !== "qr");
+  document.getElementById("searchPane").classList.toggle("hidden", mode !== "search");
+  if (mode !== "qr") stopQrScan();
+}
+
+function setQrStatus(text, kind) {
+  const el = document.getElementById("qrStatus");
+  el.textContent = text;
+  el.className = "qr-status" + (kind ? " " + kind : "");
+}
+
+function setQrButtonToStop() {
+  const btn = document.getElementById("qrStartBtn");
+  btn.textContent = "Stop Scanning";
+  btn.setAttribute("onclick", "stopQrScan()");
+  btn.classList.remove("btn-primary");
+  btn.classList.add("btn-danger");
+}
+function setQrButtonToStart() {
+  const btn = document.getElementById("qrStartBtn");
+  btn.textContent = "Start Scanning";
+  btn.setAttribute("onclick", "startQrScan()");
+  btn.classList.remove("btn-danger");
+  btn.classList.add("btn-primary");
+}
+
+async function startQrScan() {
+  if (state.qrScanning) return;
+  if (typeof Html5Qrcode === "undefined") { alert("QR library failed to load - check your internet connection."); return; }
+  setQrStatus("Starting camera...", "scanning");
+  document.getElementById("qrIdleLabel").classList.add("hidden");
+  try {
+    state.qrScanning = true;
+    state.qrProcessing = false;
+    state.lastScannedCode = null;
+    state.lastScannedAt = 0;
+    setQrButtonToStop();
+
+    const onDecode = async decodedText => {
+      const code = decodedText.trim();
+      const now = Date.now();
+      if (state.qrProcessing) return;
+      if (code === state.lastScannedCode && (now - state.lastScannedAt) < QR_RESCAN_COOLDOWN_MS) return;
+      state.qrProcessing = true;
+      state.lastScannedCode = code;
+      state.lastScannedAt = now;
+      setQrStatus("QR code detected - checking in...", "detected");
+      try { state.qrScanner.pause(true); } catch (e) {}
+      try {
+        const data = await apiPost("checkInByQr", { code: code });
+        renderResult(data);
+      } catch (err) {
+        renderResult({ ok: false, message: err.message });
+      } finally {
+        state.qrProcessing = false;
+        try { if (state.qrScanning) state.qrScanner.resume(); } catch (e) {}
+        if (state.qrScanning) setQrStatus("Point camera at the next QR code", "scanning");
+      }
+    };
+    const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
+
+    if (!state.cameraList) {
+      try { state.cameraList = await Html5Qrcode.getCameras(); } catch (e) { state.cameraList = []; }
+      document.getElementById("qrSwitchBtn").classList.toggle("hidden", !(state.cameraList && state.cameraList.length > 1));
+    }
+
+    let lastErr = null;
+    const cams = state.cameraList || [];
+    const attempts = [{ facingMode: { ideal: "environment" } }];
+    if (cams[state.cameraIndex]) attempts.push(cams[state.cameraIndex].id);
+    attempts.push({ facingMode: "user" });
+    for (const cam of attempts) {
+      try {
+        state.qrScanner = new Html5Qrcode("qrReader");
+        await state.qrScanner.start(cam, scanConfig, onDecode, () => {});
+        lastErr = null;
+        break;
+      } catch (e) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    document.getElementById("qrScanFrame").classList.add("active");
+    setQrStatus("Point camera at QR code", "scanning");
+  } catch (err) {
+    state.qrScanning = false;
+    setQrButtonToStart();
+    document.getElementById("qrIdleLabel").classList.remove("hidden");
+    document.getElementById("qrScanFrame").classList.remove("active");
+    const name = err && err.name || "";
+    let msg = "Unable to access camera.";
+    if (name.indexOf("NotAllowed") !== -1) msg = "Camera permission was blocked. Check your browser's site settings for this page and allow Camera, then reload.";
+    else if (name.indexOf("NotFound") !== -1) msg = "No camera found on this device.";
+    else if (name.indexOf("NotReadable") !== -1) msg = "The camera is already in use by another app or tab.";
+    setQrStatus(msg, "blocked");
+    alert(msg);
+  }
+}
+
+async function switchCamera() {
+  if (!state.cameraList || state.cameraList.length < 2) return;
+  state.cameraIndex = (state.cameraIndex + 1) % state.cameraList.length;
+  await stopQrScan();
+  await startQrScan();
+}
+
+async function stopQrScan() {
+  if (state.qrScanner && state.qrScanning) {
+    try { await state.qrScanner.stop(); } catch (e) {}
+    try { state.qrScanner.clear(); } catch (e) {}
+  }
+  state.qrScanning = false;
+  setQrButtonToStart();
+  document.getElementById("qrIdleLabel").classList.remove("hidden");
+  document.getElementById("qrScanFrame").classList.remove("active");
+  setQrStatus("Camera is off.");
+}
+
+function onSearchInput() {
+  clearTimeout(state.searchDebounce);
+  const q = document.getElementById("searchInput").value.trim();
+  const resultsEl = document.getElementById("searchResults");
+  if (!q) { resultsEl.innerHTML = ""; return; }
+  state.searchDebounce = setTimeout(async () => {
+    try {
+      const results = await apiGet("search", { q: q });
+      resultsEl.innerHTML = results.length
+        ? results.map(m => `<div class="search-result-item" onclick="selectSearchResult('${escAttr(m.memberId)}')"><b>${esc(m.fullName)}</b>${m.address ? " - " + esc(m.address) : ""}</div>`).join("")
+        : `<div class="search-result-item" style="cursor:default;">No match found.</div>`;
+    } catch (err) {
+      resultsEl.innerHTML = `<div class="search-result-item" style="cursor:default;color:var(--danger);">${esc(err.message)}</div>`;
+    }
+  }, 250);
+}
+
+async function selectSearchResult(memberId) {
+  document.getElementById("searchResults").innerHTML = "";
+  document.getElementById("searchInput").value = "";
+  try {
+    const data = await apiPost("checkInBySearch", { memberId: memberId });
+    renderResult(data);
+  } catch (err) {
+    renderResult({ ok: false, message: err.message });
+  }
+}
+
+function renderResult(res) {
+  const el = document.getElementById("checkinResult");
+  el.className = "result";
+  if (!res.ok) {
+    el.classList.add("error");
+    el.innerHTML = esc(res.message);
+  } else if (res.alreadyCheckedIn) {
+    el.classList.add("error");
+    el.innerHTML = `<span class="result-name">${esc(res.fullName)}</span>ALREADY CHECKED IN at ${esc(res.checkInTime)}.`;
+  } else {
+    el.classList.add("ok");
+    el.innerHTML = `<span class="result-name">${esc(res.fullName)}</span>Checked in at ${esc(res.checkInTime)}.`;
+  }
+  setTimeout(() => { el.className = "result"; }, 3500);
+}
+</script>
+</body>
+</html>
