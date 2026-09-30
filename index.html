@@ -87,6 +87,12 @@ h1{font-size:22px;margin:6px 0 2px}
 .result{margin-top:16px;padding:16px;border-radius:12px;text-align:center;display:none}
 .result.ok{display:block;background:#eef5f0;border:1px solid var(--success);color:var(--success)}
 .result.error{display:block;background:#fbeceA;border:1px solid var(--danger);color:var(--danger)}
+.rep-queue{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.rep-card{background:#fff;border:1px solid var(--accent);border-radius:12px;padding:12px 14px}
+.rep-card-name{font-weight:700;color:var(--primary-dark);font-size:13px;margin-bottom:6px}
+.rep-card input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:9px;font-size:14px;font-family:inherit}
+.rep-card-actions{display:flex;gap:8px;margin-top:8px}
+.rep-card-actions .btn{flex:1;padding:8px 10px;font-size:13px}
 .result-name{font-size:20px;font-weight:800;color:var(--primary-dark);display:block;margin-bottom:4px}
 </style>
 </head>
@@ -129,6 +135,7 @@ h1{font-size:22px;margin:6px 0 2px}
   </div>
 
   <div id="checkinResult" class="result"></div>
+  <div id="repQueue" class="rep-queue"></div>
 </div>
 
 <script>
@@ -346,6 +353,41 @@ async function selectSearchResult(memberId) {
   }
 }
 
+// "Represented by" cards: one per fresh check-in, sitting directly under the
+// Search Name / scanner area. They stay until Save or Skip, so the next scan
+// never wipes out something staff is still typing.
+function addRepCard(memberId, fullName) {
+  const queue = document.getElementById("repQueue");
+  if (!queue) return;
+  const card = document.createElement("div");
+  card.className = "rep-card";
+  card.innerHTML = `
+    <div class="rep-card-name">${esc(fullName)}</div>
+    <input type="text" placeholder="Represented by (optional)" autocomplete="off">
+    <div class="rep-card-actions">
+      <button class="btn btn-primary">Save</button>
+      <button class="btn btn-ghost">Skip</button>
+    </div>`;
+  const input = card.querySelector("input");
+  const [saveBtn, skipBtn] = card.querySelectorAll("button");
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name) { card.remove(); return; }
+    saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+    try {
+      await apiPost("setRepresentative", { memberId: memberId, name: name });
+      card.remove();
+    } catch (err) {
+      saveBtn.disabled = false; saveBtn.textContent = "Save";
+      alert(err.message);
+    }
+  };
+  saveBtn.onclick = save;
+  skipBtn.onclick = () => card.remove();
+  input.onkeydown = e => { if (e.key === "Enter") save(); };
+  queue.appendChild(card);
+}
+
 function renderResult(res) {
   const el = document.getElementById("checkinResult");
   el.className = "result";
@@ -358,6 +400,7 @@ function renderResult(res) {
   } else {
     el.classList.add("ok");
     el.innerHTML = `<span class="result-name">${esc(res.fullName)}</span>Checked in at ${esc(res.checkInTime)}.`;
+    addRepCard(res.memberId, res.fullName);
   }
   setTimeout(() => { el.className = "result"; }, 3500);
 }
