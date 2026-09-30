@@ -1,4 +1,42 @@
 <!DOCTYPE html>
+<!--
+  STANDALONE QR SCANNER - PERA MPC Members Day
+  =============================================
+  WHY THIS FILE EXISTS (read this first):
+
+  Google Apps Script serves every Web App page (Index.html in this project)
+  inside its own sandboxed iframe - this is a fixed part of the platform,
+  not a setting this project can turn off. Modern browsers only allow a
+  page to use the camera (getUserMedia) if the Permissions-Policy of every
+  frame in the chain allows it. Apps Script's own wrapper iframe does not
+  delegate the "camera" permission to the page it serves, on at least some
+  deployments/devices - the app's own in-app camera scanner includes a
+  "Camera not working?" diagnostics panel that reports this directly
+  (look for "Camera allowed by page policy: NO").
+
+  This file sidesteps that limitation completely: it is a PLAIN, ORDINARY
+  web page - no Apps Script, no iframe, nothing wrapping it - so the
+  camera works exactly like it would on any other website. It talks to the
+  SAME Google Sheet as the main app, over plain HTTP (fetch), by calling
+  the doGet/doPost JSON endpoints added to Code.gs for this exact purpose.
+
+  HOW TO USE THIS FILE
+  1. Deploy the Apps Script project as a Web App (Deploy > Manage
+     deployments > Web app), Execute as: Me, Who has access: Anyone.
+     Copy the /exec URL it gives you.
+  2. Paste that URL into APPS_SCRIPT_URL below, replacing the placeholder.
+  3. Host this single file somewhere with a real https:// URL. The easiest
+     free option is GitHub Pages:
+       a. Create a new PUBLIC GitHub repository.
+       b. Upload this file, named exactly index.html, to that repo.
+       c. Repo Settings > Pages > Source: Deploy from branch > main /
+          (root) > Save. GitHub gives you a URL like
+          https://yourname.github.io/yourrepo/ within a minute or two.
+     (Firebase Hosting, Netlify, or Cloud Storage static hosting all work
+     the same way if you already use one of those instead.)
+  4. Open that github.io (or equivalent) link on the staff phone. The
+     camera permission prompt will work normally there - allow it once.
+-->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -78,7 +116,7 @@ h1{font-size:22px;margin:6px 0 2px}
     <p class="qr-status" id="qrStatus">Camera is off.</p>
     <div class="toolbar">
       <button id="qrStartBtn" class="btn btn-primary" onclick="startQrScan()">Start Scanning</button>
-      <button id="qrSwitchBtn" class="btn btn-ghost hidden" onclick="switchCamera()">Switch Camera</button>
+      <button id="qrSwitchBtn" class="btn btn-ghost" onclick="switchCamera()">Switch Camera</button>
     </div>
     <p class="hint">Point the camera at the client's QR code. It keeps scanning - just point it at the next one after each check-in.</p>
   </div>
@@ -94,37 +132,62 @@ h1{font-size:22px;margin:6px 0 2px}
 </div>
 
 <script>
-// ======================= CONFIGURED URL =======================
+// ======================= CONFIGURE THIS ONE LINE =======================
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzfCJgP8fbqeAkzp4YO4D82xnv2p5pbFg_GLSimRbXBE1p-3yrtjwIii7eFtAlhOrj64w/exec";
-// ==============================================================
+// =========================================================================
 
-if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("https://crasheredbanz2012-beep.github.io/qr-scanner/") !== -1) {
+if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("PASTE_YOUR") !== -1) {
   document.getElementById("configWarn").classList.remove("hidden");
 }
 
-const state = { qrScanner: null, qrScanning: false, qrProcessing: false, lastScannedCode: null, lastScannedAt: 0, cameraList: null, cameraIndex: 0, searchDebounce: null };
+const state = { qrScanner: null, qrScanning: false, qrProcessing: false, lastScannedCode: null, lastScannedAt: 0, warmupUntil: 0, facing: "environment", searchDebounce: null };
 const QR_RESCAN_COOLDOWN_MS = 4000;
+const QR_WARMUP_MS = 1500;
 
 function esc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function escAttr(v) { return esc(v).replace(/'/g, "&#39;"); }
 
-async function apiGet(action, params) {
-  const qs = new URLSearchParams(Object.assign({ api: action }, params || {})).toString();
-  const res = await fetch(APPS_SCRIPT_URL + "?" + qs);
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.message || "Request failed.");
-  return json.data;
+// Shared fetch helper: 15s timeout, 1 auto-retry, and a clear message when
+// the server answers with a web page (wrong URL / access) instead of JSON.
+// Retrying a check-in is safe - the server never double-checks-in a member.
+async function fetchJson_(url, options) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await fetch(url, Object.assign({}, options, { signal: ctrl.signal }));
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); }
+      catch (e) { throw new Error("Server returned a web page instead of data. Check APPS_SCRIPT_URL (/exec) and that access is set to Anyone."); }
+      if (!json.ok) throw new Error(json.message || "Request failed.");
+      return json.data;
+    } catch (err) {
+      lastErr = err;
+      const isNet = err.name === "AbortError" || err.name === "TypeError";
+      if (!isNet) throw err; // server answered: do not retry
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error("Slow or no connection. Please scan again.");
 }
 
+// GET for reads (search) - plain fetch, no custom headers = CORS simple request.
+async function apiGet(action, params) {
+  const qs = new URLSearchParams(Object.assign({ api: action }, params || {})).toString();
+  return fetchJson_(APPS_SCRIPT_URL + "?" + qs);
+}
+
+// POST for writes - text/plain keeps this a CORS simple request (no preflight);
+// the body is still JSON, decoded manually by doPost() in Code.gs.
 async function apiPost(action, params) {
-  const res = await fetch(APPS_SCRIPT_URL, {
+  return fetchJson_(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(Object.assign({ action: action }, params || {}))
   });
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.message || "Request failed.");
-  return json.data;
 }
 
 function switchMode(mode) {
@@ -171,6 +234,7 @@ async function startQrScan() {
     const onDecode = async decodedText => {
       const code = decodedText.trim();
       const now = Date.now();
+      if (Date.now() < state.warmupUntil) return; // still focusing
       if (state.qrProcessing) return;
       if (code === state.lastScannedCode && (now - state.lastScannedAt) < QR_RESCAN_COOLDOWN_MS) return;
       state.qrProcessing = true;
@@ -191,26 +255,38 @@ async function startQrScan() {
     };
     const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
 
-    if (!state.cameraList) {
-      try { state.cameraList = await Html5Qrcode.getCameras(); } catch (e) { state.cameraList = []; }
-      document.getElementById("qrSwitchBtn").classList.toggle("hidden", !(state.cameraList && state.cameraList.length > 1));
-    }
-
-    state.qrScanner = new Html5Qrcode("qrReader");
-
-    try {
-      await state.qrScanner.start({ facingMode: "environment" }, scanConfig, onDecode, () => {});
-    } catch (e) {
-      const cams = state.cameraList || [];
-      if (cams[state.cameraIndex]) {
-        await state.qrScanner.start(cams[state.cameraIndex].id, scanConfig, onDecode, () => {});
-      } else {
-        await state.qrScanner.start({ facingMode: "user" }, scanConfig, onDecode, () => {});
+    // Back camera by default. facingMode "exact" FORCES the requested side
+    // (an "ideal" request can silently give the front camera on some phones);
+    // if the device has no such camera (e.g. a PC webcam) it falls through
+    // to looser attempts. A failed attempt is fully cleaned up first so it
+    // cannot keep the camera locked for the next one.
+    const f = state.facing;
+    const focus = { advanced: [{ focusMode: "continuous" }] };
+    const attempts = [
+      { cam: { facingMode: f }, vc: Object.assign({ facingMode: { exact: f } }, focus) },
+      { cam: { facingMode: f }, vc: { facingMode: { exact: f } } },
+      { cam: { facingMode: f }, vc: { facingMode: { ideal: f } } },
+      { cam: { facingMode: f }, vc: {} }
+    ];
+    let lastErr = null;
+    for (const a of attempts) {
+      try {
+        state.qrScanner = new Html5Qrcode("qrReader");
+        await state.qrScanner.start(a.cam, Object.assign({ videoConstraints: a.vc }, scanConfig), onDecode, () => {});
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        try { await state.qrScanner.stop(); } catch (x) {}
+        try { state.qrScanner.clear(); } catch (x) {}
+        if (String(e && (e.name || e)).indexOf("NotAllowed") !== -1) break;
       }
     }
-
+    if (lastErr) throw lastErr;
     document.getElementById("qrScanFrame").classList.add("active");
-    setQrStatus("Point camera at QR code", "scanning");
+    state.warmupUntil = Date.now() + QR_WARMUP_MS;
+    setQrStatus("Focusing... (" + (state.facing === "user" ? "front" : "back") + " camera)", "scanning");
+    setTimeout(() => { if (state.qrScanning && !state.qrProcessing) setQrStatus("Point camera at QR code", "scanning"); }, QR_WARMUP_MS);
   } catch (err) {
     state.qrScanning = false;
     setQrButtonToStart();
@@ -227,8 +303,7 @@ async function startQrScan() {
 }
 
 async function switchCamera() {
-  if (!state.cameraList || state.cameraList.length < 2) return;
-  state.cameraIndex = (state.cameraIndex + 1) % state.cameraList.length;
+  state.facing = state.facing === "environment" ? "user" : "environment";
   await stopQrScan();
   await startQrScan();
 }
