@@ -234,7 +234,8 @@ async function startQrScan() {
         if (state.qrScanning) setQrStatus("Point camera at the next QR code", "scanning");
       }
     };
-    const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
+  const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
+state.qrScanner.start({ facingMode: "exact" == "environment" ? "environment" : { exact: "environment" } }, scanConfig, onDecode);
 
     if (!state.cameraList) {
       try { state.cameraList = await Html5Qrcode.getCameras(); } catch (e) { state.cameraList = []; }
