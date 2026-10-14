@@ -1,46 +1,11 @@
 <!DOCTYPE html>
-<!--
-  STANDALONE QR SCANNER - PERA MPC Members Day
-  =============================================
-  WHY THIS FILE EXISTS (read this first):
-
-  Google Apps Script serves every Web App page (Index.html in this project)
-  inside its own sandboxed iframe - this is a fixed part of the platform,
-  not a setting this project can turn off. Modern browsers only allow a
-  page to use the camera (getUserMedia) if the Permissions-Policy of every
-  frame in the chain allows it. Apps Script's own wrapper iframe does not
-  delegate the "camera" permission to the page it serves, on at least some
-  deployments/devices - the app's own in-app camera scanner includes a
-  "Camera not working?" diagnostics panel that reports this directly
-  (look for "Camera allowed by page policy: NO").
-
-  This file sidesteps that limitation completely: it is a PLAIN, ORDINARY
-  web page - no Apps Script, no iframe, nothing wrapping it - so the
-  camera works exactly like it would on any other website. It talks to the
-  SAME Google Sheet as the main app, over plain HTTP (fetch), by calling
-  the doGet/doPost JSON endpoints added to Code.gs for this exact purpose.
-
-  HOW TO USE THIS FILE
-  1. Deploy the Apps Script project as a Web App (Deploy > Manage
-     deployments > Web app), Execute as: Me, Who has access: Anyone.
-     Copy the /exec URL it gives you.
-  2. Paste that URL into APPS_SCRIPT_URL below, replacing the placeholder.
-  3. Host this single file somewhere with a real https:// URL. The easiest
-     free option is GitHub Pages:
-       a. Create a new PUBLIC GitHub repository.
-       b. Upload this file, named exactly index.html, to that repo.
-       c. Repo Settings > Pages > Source: Deploy from branch > main /
-          (root) > Save. GitHub gives you a URL like
-          https://yourname.github.io/yourrepo/ within a minute or two.
-     (Firebase Hosting, Netlify, or Cloud Storage static hosting all work
-     the same way if you already use one of those instead.)
-  4. Open that github.io (or equivalent) link on the staff phone. The
-     camera permission prompt will work normally there - allow it once.
--->
-<html>
+<!-- Upload this file as index.html to the existing GitHub Pages scanner.
+     Backend: updated code.js -> Code.gs. See SETUP-CEBUANO.md. -->
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>PERA MPC Members Day - Scanner</title>
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <style>
@@ -94,316 +59,339 @@ h1{font-size:22px;margin:6px 0 2px}
 .rep-card-actions{display:flex;gap:8px;margin-top:8px}
 .rep-card-actions .btn{flex:1;padding:8px 10px;font-size:13px}
 .result-name{font-size:20px;font-weight:800;color:var(--primary-dark);display:block;margin-bottom:4px}
+
+.card{max-width:500px}.field{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}
+input,textarea{font-family:inherit}textarea.search-input{min-height:85px;resize:vertical}
+button:disabled,input:disabled,textarea:disabled{opacity:.6;cursor:not-allowed}
+#clientForm{border-top:1px solid var(--border);margin-top:18px;padding-top:6px}
+#photoPreview{display:block;max-width:100%;max-height:320px;border-radius:12px;margin:12px auto;object-fit:contain}
+.photo-box{border:1px dashed var(--accent);padding:12px;border-radius:12px;margin-top:16px}
+.notice{font-size:13px;line-height:1.5;color:var(--muted);white-space:pre-line}
+.notice.error{color:var(--danger)}.notice.success{color:var(--success)}
+.session{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+fieldset{border:0;margin:0;padding:0;min-width:0}.search-result-item{display:block;width:100%;text-align:left;background:white;font:inherit}
+#existingPhoto{display:block;margin:8px 0;overflow-wrap:anywhere}h2{font-size:19px;margin:14px 0 4px}
+input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.card{padding:16px}.toolbar{flex-wrap:wrap}}
 </style>
 </head>
 <body>
-
 <div class="card">
-  <h1>Members Day Scanner</h1>
-  <p class="sub">Standalone scanner - hosted outside Apps Script so the camera works normally.</p>
-
-  <div id="configWarn" class="config-warn hidden">
-    Set <code>APPS_SCRIPT_URL</code> near the top of this file's &lt;script&gt; to your deployed Web App /exec URL before using this page.
-  </div>
-
-  <div class="mode-tabs">
-    <button id="tabQr" class="mode-tab active" onclick="switchMode('qr')">Scan QR</button>
-    <button id="tabSearch" class="mode-tab" onclick="switchMode('search')">Search Name</button>
-  </div>
-
-  <div id="qrPane">
-    <div class="qr-reader" id="qrReader">
-      <div class="qr-idle" id="qrIdleLabel">Camera is off</div>
-      <div class="qr-scan-frame" id="qrScanFrame">
-        <div class="qr-corner qr-corner-tl"></div><div class="qr-corner qr-corner-tr"></div>
-        <div class="qr-corner qr-corner-bl"></div><div class="qr-corner qr-corner-br"></div>
+<h1>Members Day Scanner</h1>
+<p class="sub">Scan a client, update details, and attach a photo.</p>
+<div id="configWarn" class="config-warn hidden">Set APPS_SCRIPT_URL to your Apps Script Web App /exec URL.</div>
+<form id="loginForm">
+  <label class="field" for="staffPassword">Admin password</label>
+  <input id="staffPassword" class="search-input" type="password" autocomplete="current-password" required>
+  <p class="notice">Staff access is required to view contact details, edit clients and save photos.</p>
+  <button id="loginBtn" class="btn btn-primary btn-block">Sign In</button>
+  <p id="loginStatus" class="notice" role="status"></p>
+</form>
+<div id="workspace" class="hidden">
+  <div class="session"><span class="notice">Staff scanner</span><button id="logoutBtn" class="btn btn-ghost" type="button">Sign Out</button></div>
+  <fieldset id="scanControls">
+    <div class="mode-tabs">
+      <button id="tabQr" class="mode-tab active" type="button">Scan QR</button>
+      <button id="tabSearch" class="mode-tab" type="button">Search Name</button>
+    </div>
+    <div id="qrPane">
+      <div class="qr-reader"><div id="qrReader" style="width:100%"></div><div class="qr-idle" id="qrIdleLabel">Camera is off</div></div>
+      <p class="qr-status" id="qrStatus" role="status">Camera is off.</p>
+      <div class="toolbar">
+        <button id="qrStartBtn" class="btn btn-primary" type="button">Start Scanning</button>
+        <button id="qrSwitchBtn" class="btn btn-ghost" type="button">Switch Camera</button>
       </div>
+      <p class="hint">Scan the client's Member ID QR. Attendance is marked immediately; the camera then stops so you can review the details.</p>
     </div>
-    <p class="qr-status" id="qrStatus">Camera is off.</p>
-    <div class="toolbar">
-      <button id="qrStartBtn" class="btn btn-primary" onclick="startQrScan()">Start Scanning</button>
-      <button id="qrSwitchBtn" class="btn btn-ghost" onclick="switchCamera()">Switch Camera</button>
+    <div id="searchPane" class="hidden">
+      <label class="field" for="searchInput">Client name or Member ID</label>
+      <input id="searchInput" class="search-input" placeholder="Example: Juan Dela Cruz or 00123" autocomplete="off">
+      <div id="searchResults" class="search-results"></div>
     </div>
-    <p class="hint">Point the camera at the client's QR code. It keeps scanning - just point it at the next one after each check-in.</p>
-  </div>
-
-  <div id="searchPane" class="hidden">
-    <div class="search-wrap">
-      <input id="searchInput" class="search-input" type="text" placeholder="Type the client's name or ID..." oninput="onSearchInput()">
+  </fieldset>
+  <div id="checkinResult" class="result" role="status" aria-live="polite"></div>
+  <form id="clientForm" class="hidden">
+    <h2>Client Details</h2>
+    <p class="notice">Review the details below. The Member ID stays the same so the printed QR still works.</p>
+    <fieldset id="editFields">
+      <label class="field" for="memberId">Member ID</label><input id="memberId" class="search-input" readonly>
+      <label class="field" for="fullName">Full name *</label><input id="fullName" class="search-input" required maxlength="200" autocomplete="off">
+      <label class="field" for="address">Address</label><textarea id="address" class="search-input" maxlength="1000" autocomplete="off"></textarea>
+      <label class="field" for="contactNo">Contact number</label><input id="contactNo" class="search-input" type="tel" maxlength="40" autocomplete="off">
+      <label class="field" for="representativeName">Represented by (optional)</label><input id="representativeName" class="search-input" maxlength="200" autocomplete="off">
+      <div class="photo-box">
+        <strong>Client Photo</strong>
+        <a id="existingPhoto" class="hidden" target="_blank" rel="noopener noreferrer">Open saved photo in Google Drive</a>
+        <p class="notice">Take a photo with the client's permission. It will be saved when you press Save Changes.</p>
+        <button id="takePhotoBtn" class="btn btn-primary btn-block" type="button">Take Photo / Retake</button>
+        <input id="photoInput" type="file" accept="image/*" capture="environment" class="hidden">
+        <img id="photoPreview" class="hidden" alt="New client photo preview">
+        <button id="removePhotoBtn" class="btn btn-ghost hidden" type="button">Remove New Photo</button>
+        <p id="photoStatus" class="notice" role="status">No new photo selected.</p>
+      </div>
+    </fieldset>
+    <p id="saveStatus" class="notice" role="status" aria-live="polite"></p>
+    <button id="saveBtn" class="btn btn-primary btn-block" style="margin-top:12px">Save Changes</button>
+    <div class="toolbar" style="margin-top:12px">
+      <button id="reloadBtn" class="btn btn-ghost" type="button">Reload Client</button>
+      <button id="nextBtn" class="btn btn-ghost" type="button">Next Client</button>
     </div>
-    <div id="searchResults" class="search-results"></div>
-  </div>
-
-  <div id="checkinResult" class="result"></div>
-  <div id="repQueue" class="rep-queue"></div>
+    <p class="hint">Next Client discards unsaved edits only. It does not undo attendance.</p>
+  </form>
 </div>
-
+</div>
 <script>
-// ======================= CONFIGURE THIS ONE LINE =======================
+// Keep your existing deployment URL, or replace it if you create a new deployment.
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzfCJgP8fbqeAkzp4YO4D82xnv2p5pbFg_GLSimRbXBE1p-3yrtjwIii7eFtAlhOrj64w/exec";
-// =========================================================================
+const $ = id => document.getElementById(id);
+const state = { password: '', member: null, photo: '', dirty: false, saving: false, photoBusy: false,
+  loading: false, pendingSave: null, scanner: null, scanning: false, cameraBusy: false,
+  facing: 'environment', mode: 'qr', searchTimer: null, searchSeq: 0 };
+if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)) $('configWarn').classList.remove('hidden');
 
-if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("https://crasheredbanz2012-beep.github.io/qr-scanner/") !== -1) {
-  document.getElementById("configWarn").classList.remove("hidden");
+function message(id, text, kind = '') { $(id).textContent = text; $(id).className = 'notice ' + kind; }
+function result(text, ok) { $('checkinResult').textContent = text; $('checkinResult').className = 'result ' + (ok ? 'ok' : 'error'); }
+function updateControls() {
+  $('scanControls').disabled = !!state.member || state.loading || state.cameraBusy;
+  $('editFields').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
+  $('saveBtn').disabled = state.saving || state.photoBusy || state.loading;
+  $('nextBtn').disabled = $('reloadBtn').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
+  $('logoutBtn').disabled = state.saving || state.photoBusy || state.loading || !!state.pendingSave || state.cameraBusy;
+  $('saveBtn').textContent = state.saving ? 'Saving…' : state.pendingSave ? 'Retry Save' : 'Save Changes';
+  $('qrStartBtn').textContent = state.scanning ? 'Stop Scanning' : 'Start Scanning';
 }
 
-const state = { qrScanner: null, qrScanning: false, qrProcessing: false, lastScannedCode: null, lastScannedAt: 0, warmupUntil: 0, facing: "environment", searchDebounce: null };
-const QR_RESCAN_COOLDOWN_MS = 4000;
-const QR_WARMUP_MS = 1500;
-
-function esc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
-function escAttr(v) { return esc(v).replace(/'/g, "&#39;"); }
-
-// Shared fetch helper: 15s timeout, 1 auto-retry, and a clear message when
-// the server answers with a web page (wrong URL / access) instead of JSON.
-// Retrying a check-in is safe - the server never double-checks-in a member.
-async function fetchJson_(url, options) {
-  let lastErr = null;
+async function api(action, params = {}) {
+  // Same payload for both attempts, including the save reference. Password lives
+  // in this tab's memory only; no localStorage, cookies or URL secrets.
+  const body = JSON.stringify({ action, ...params, password: state.password });
   for (let attempt = 0; attempt < 2; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), action === 'saveScannedMember' ? 90000 : 45000);
     try {
-      const res = await fetch(url, Object.assign({}, options, { signal: ctrl.signal }));
-      const text = await res.text();
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body,
+        signal: controller.signal, redirect: 'follow', credentials: 'omit'
+      });
+      const raw = await response.text();
       let json;
-      try { json = JSON.parse(text); }
-      catch (e) { throw new Error("Server returned a web page instead of data. Check APPS_SCRIPT_URL (/exec) and that access is set to Anyone."); }
-      if (!json.ok) throw new Error(json.message || "Request failed.");
+      try { json = JSON.parse(raw); }
+      catch (_) { const err = new Error('Server did not return data. Check the /exec URL and Web App deployment access. If saving, press Retry Save after fixing the connection.'); err.uncertain = true; throw err; }
+      if (!json.ok || (json.data && json.data.ok === false)) throw new Error(json.message || json.data.message || 'Request failed.');
+      if (!response.ok) { const err = new Error('Server connection failed. Please retry.'); err.uncertain = true; throw err; }
       return json.data;
     } catch (err) {
-      lastErr = err;
-      const isNet = err.name === "AbortError" || err.name === "TypeError";
-      if (!isNet) throw err; // server answered: do not retry
-    } finally {
-      clearTimeout(timer);
-    }
+      const network = err.name === 'AbortError' || err.name === 'TypeError';
+      if (network && attempt === 0) continue;
+      if (network) { const failure = new Error('Connection interrupted. Your save may have completed. Keep this page open and press Retry Save; do not scan another client yet.'); failure.uncertain = true; throw failure; }
+      throw err;
+    } finally { clearTimeout(timer); }
   }
-  throw new Error("Slow or no connection. Please scan again.");
 }
 
-// GET for reads (search) - plain fetch, no custom headers = CORS simple request.
-async function apiGet(action, params) {
-  const qs = new URLSearchParams(Object.assign({ api: action }, params || {})).toString();
-  return fetchJson_(APPS_SCRIPT_URL + "?" + qs);
-}
-
-// POST for writes - text/plain keeps this a CORS simple request (no preflight);
-// the body is still JSON, decoded manually by doPost() in Code.gs.
-async function apiPost(action, params) {
-  return fetchJson_(APPS_SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(Object.assign({ action: action }, params || {}))
-  });
-}
-
-function switchMode(mode) {
-  document.getElementById("tabQr").classList.toggle("active", mode === "qr");
-  document.getElementById("tabSearch").classList.toggle("active", mode === "search");
-  document.getElementById("qrPane").classList.toggle("hidden", mode !== "qr");
-  document.getElementById("searchPane").classList.toggle("hidden", mode !== "search");
-  if (mode !== "qr") stopQrScan();
-}
-
-function setQrStatus(text, kind) {
-  const el = document.getElementById("qrStatus");
-  el.textContent = text;
-  el.className = "qr-status" + (kind ? " " + kind : "");
-}
-
-function setQrButtonToStop() {
-  const btn = document.getElementById("qrStartBtn");
-  btn.textContent = "Stop Scanning";
-  btn.setAttribute("onclick", "stopQrScan()");
-  btn.classList.remove("btn-primary");
-  btn.classList.add("btn-danger");
-}
-function setQrButtonToStart() {
-  const btn = document.getElementById("qrStartBtn");
-  btn.textContent = "Start Scanning";
-  btn.setAttribute("onclick", "startQrScan()");
-  btn.classList.remove("btn-danger");
-  btn.classList.add("btn-primary");
-}
-
-async function startQrScan() {
-  if (state.qrScanning) return;
-  if (typeof Html5Qrcode === "undefined") { alert("QR library failed to load - check your internet connection."); return; }
-  setQrStatus("Starting camera...", "scanning");
-  document.getElementById("qrIdleLabel").classList.add("hidden");
+$('loginForm').addEventListener('submit', async event => {
+  event.preventDefault(); $('loginBtn').disabled = true;
+  state.password = $('staffPassword').value;
+  message('loginStatus', 'Signing in…');
   try {
-    state.qrScanning = true;
-    state.qrProcessing = false;
-    state.lastScannedCode = null;
-    state.lastScannedAt = 0;
-    setQrButtonToStop();
+    await api('scannerLogin');
+    $('staffPassword').value = '';
+    $('loginForm').classList.add('hidden'); $('workspace').classList.remove('hidden');
+    message('loginStatus', '');
+  } catch (err) { state.password = ''; message('loginStatus', err.message, 'error'); }
+  finally { $('loginBtn').disabled = false; }
+});
 
-    const onDecode = async decodedText => {
-      const code = decodedText.trim();
-      const now = Date.now();
-      if (Date.now() < state.warmupUntil) return; // still focusing
-      if (state.qrProcessing) return;
-      if (code === state.lastScannedCode && (now - state.lastScannedAt) < QR_RESCAN_COOLDOWN_MS) return;
-      state.qrProcessing = true;
-      state.lastScannedCode = code;
-      state.lastScannedAt = now;
-      setQrStatus("QR code detected - checking in...", "detected");
+async function stopCamera() {
+  const scanner = state.scanner;
+  state.scanning = false;
+  if (scanner) {
+    try { await scanner.stop(); } catch (_) {}
+    try { scanner.clear(); } catch (_) {}
+    if (state.scanner === scanner) state.scanner = null;
+  }
+  $('qrIdleLabel').classList.remove('hidden');
+  $('qrStatus').textContent = 'Camera is off.';
+  updateControls();
+}
+
+async function startCamera() {
+  if (state.member || state.loading || state.cameraBusy || state.scanning || !state.password) return;
+  if (!window.isSecureContext) { result('The camera requires HTTPS. Open the GitHub Pages HTTPS link.', false); return; }
+  if (typeof Html5Qrcode === 'undefined') { result('QR scanner library did not load. Check your connection and reload.', false); return; }
+  state.cameraBusy = true; updateControls();
+  $('qrIdleLabel').classList.add('hidden'); $('qrStatus').textContent = 'Starting camera…';
+  let lastError;
+  try {
+    for (const camera of [{ facingMode: { exact: state.facing } }, { facingMode: state.facing }]) {
+      const scanner = new Html5Qrcode('qrReader'); state.scanner = scanner;
       try {
-        const data = await apiPost("checkInByQr", { code: code });
-        renderResult(data);
+        await scanner.start(camera, { fps: 10, qrbox: (w, h) => ({ width: Math.min(220, w * .75, h * .75), height: Math.min(220, w * .75, h * .75) }) },
+          text => { if (state.scanning && !state.loading && !state.member) openClient(String(text).trim(), 'QR'); }, () => {});
+        state.scanning = true; lastError = null; break;
       } catch (err) {
-        renderResult({ ok: false, message: err.message });
-      } finally {
-        state.qrProcessing = false;
-        if (state.qrScanning) setQrStatus("Point camera at the next QR code", "scanning");
-      }
-    };
-    const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
-
-    // Back camera by default. facingMode "exact" FORCES the requested side
-    // (an "ideal" request can silently give the front camera on some phones);
-    // if the device has no such camera (e.g. a PC webcam) it falls through
-    // to looser attempts. A failed attempt is fully cleaned up first so it
-    // cannot keep the camera locked for the next one.
-    const f = state.facing;
-    const focus = { advanced: [{ focusMode: "continuous" }] };
-    const attempts = [
-      { cam: { facingMode: f }, vc: Object.assign({ facingMode: { exact: f } }, focus) },
-      { cam: { facingMode: f }, vc: { facingMode: { exact: f } } },
-      { cam: { facingMode: f }, vc: { facingMode: { ideal: f } } },
-      { cam: { facingMode: f }, vc: {} }
-    ];
-    let lastErr = null;
-    for (const a of attempts) {
-      try {
-        state.qrScanner = new Html5Qrcode("qrReader");
-        await state.qrScanner.start(a.cam, Object.assign({ videoConstraints: a.vc }, scanConfig), onDecode, () => {});
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        try { await state.qrScanner.stop(); } catch (x) {}
-        try { state.qrScanner.clear(); } catch (x) {}
-        if (String(e && (e.name || e)).indexOf("NotAllowed") !== -1) break;
+        lastError = err;
+        try { await scanner.stop(); } catch (_) {}
+        try { scanner.clear(); } catch (_) {}
+        state.scanner = null;
+        if (/NotAllowed|Permission/i.test(String(err))) break;
       }
     }
-    if (lastErr) throw lastErr;
-    document.getElementById("qrScanFrame").classList.add("active");
-    state.warmupUntil = Date.now() + QR_WARMUP_MS;
-    setQrStatus("Focusing... (" + (state.facing === "user" ? "front" : "back") + " camera)", "scanning");
-    setTimeout(() => { if (state.qrScanning && !state.qrProcessing) setQrStatus("Point camera at QR code", "scanning"); }, QR_WARMUP_MS);
+    if (lastError) throw lastError;
+    $('qrStatus').textContent = 'Point the camera at the client’s QR code.';
   } catch (err) {
-    state.qrScanning = false;
-    setQrButtonToStart();
-    document.getElementById("qrIdleLabel").classList.remove("hidden");
-    document.getElementById("qrScanFrame").classList.remove("active");
-    const name = err && err.name || "";
-    let msg = "Unable to access camera.";
-    if (name.indexOf("NotAllowed") !== -1) msg = "Camera permission was blocked. Check your browser's site settings for this page and allow Camera, then reload.";
-    else if (name.indexOf("NotFound") !== -1) msg = "No camera found on this device.";
-    else if (name.indexOf("NotReadable") !== -1) msg = "The camera is already in use by another app or tab.";
-    setQrStatus(msg, "blocked");
-    alert(msg);
-  }
+    state.scanning = false; $('qrIdleLabel').classList.remove('hidden');
+    $('qrStatus').textContent = 'Camera unavailable. Allow camera access in your browser or use Search Name.';
+    result('Could not open the camera. Close other camera apps and check this site’s camera permission.', false);
+  } finally { state.cameraBusy = false; updateControls(); }
 }
 
-async function switchCamera() {
-  state.facing = state.facing === "environment" ? "user" : "environment";
-  await stopQrScan();
-  await startQrScan();
+async function switchMode(mode) {
+  if (state.member || state.loading || state.cameraBusy) return;
+  state.cameraBusy = true; updateControls();
+  await stopCamera(); state.mode = mode;
+  $('tabQr').classList.toggle('active', mode === 'qr'); $('tabSearch').classList.toggle('active', mode === 'search');
+  $('qrPane').classList.toggle('hidden', mode !== 'qr'); $('searchPane').classList.toggle('hidden', mode !== 'search');
+  state.cameraBusy = false; updateControls();
+  if (mode === 'search') $('searchInput').focus();
 }
+$('tabQr').onclick = () => switchMode('qr'); $('tabSearch').onclick = () => switchMode('search');
+$('qrStartBtn').onclick = async () => { if (state.scanning) { state.cameraBusy = true; updateControls(); await stopCamera(); state.cameraBusy = false; updateControls(); } else await startCamera(); };
+$('qrSwitchBtn').onclick = async () => {
+  if (state.member || state.cameraBusy || state.loading) return;
+  state.cameraBusy = true; updateControls(); await stopCamera();
+  state.facing = state.facing === 'environment' ? 'user' : 'environment';
+  state.cameraBusy = false; await startCamera();
+};
 
-async function stopQrScan() {
-  if (state.qrScanner && state.qrScanning) {
-    try { await state.qrScanner.stop(); } catch (e) {}
-    try { state.qrScanner.clear(); } catch (e) {}
-  }
-  state.qrScanning = false;
-  setQrButtonToStart();
-  document.getElementById("qrIdleLabel").classList.remove("hidden");
-  document.getElementById("qrScanFrame").classList.remove("active");
-  setQrStatus("Camera is off.");
+function clearNewPhoto() {
+  state.photo = ''; $('photoInput').value = ''; $('photoPreview').removeAttribute('src');
+  $('photoPreview').classList.add('hidden'); $('removePhotoBtn').classList.add('hidden');
+  message('photoStatus', 'No new photo selected.');
 }
-
-function onSearchInput() {
-  clearTimeout(state.searchDebounce);
-  const q = document.getElementById("searchInput").value.trim();
-  const resultsEl = document.getElementById("searchResults");
-  if (!q) { resultsEl.innerHTML = ""; return; }
-  state.searchDebounce = setTimeout(async () => {
-    try {
-      const results = await apiGet("search", { q: q });
-      resultsEl.innerHTML = results.length
-        ? results.map(m => `<div class="search-result-item" onclick="selectSearchResult('${escAttr(m.memberId)}')"><b>${esc(m.fullName)}</b>${m.address ? " - " + esc(m.address) : ""}</div>`).join("")
-        : `<div class="search-result-item" style="cursor:default;">No match found.</div>`;
-    } catch (err) {
-      resultsEl.innerHTML = `<div class="search-result-item" style="cursor:default;color:var(--danger);">${esc(err.message)}</div>`;
-    }
-  }, 250);
+function showProfile(member) {
+  state.member = member; state.dirty = false; state.pendingSave = null; clearNewPhoto();
+  ['memberId', 'fullName', 'address', 'contactNo', 'representativeName'].forEach(key => { $(key).value = member[key] || ''; });
+  const url = member.photoUrl || '';
+  const safe = /^https:\/\/drive\.google\.com\//.test(url);
+  $('existingPhoto').classList.toggle('hidden', !safe);
+  if (safe) $('existingPhoto').href = url; else $('existingPhoto').removeAttribute('href');
+  $('clientForm').classList.remove('hidden'); updateControls();
 }
-
-async function selectSearchResult(memberId) {
-  document.getElementById("searchResults").innerHTML = "";
-  document.getElementById("searchInput").value = "";
+async function openClient(memberId, method) {
+  if (state.loading || state.saving || state.photoBusy || state.pendingSave) return;
+  state.loading = true; state.searchSeq++; clearTimeout(state.searchTimer); updateControls();
+  await stopCamera(); result('Loading client and checking attendance…', true);
   try {
-    const data = await apiPost("checkInBySearch", { memberId: memberId });
-    renderResult(data);
-  } catch (err) {
-    renderResult({ ok: false, message: err.message });
-  }
+    const data = await api('scanMember', { memberId, method });
+    showProfile(data.member);
+    result(data.alreadyCheckedIn ? data.fullName + ' — ALREADY CHECKED IN at ' + data.checkInTime + '. You can still update details and attach a photo.' : data.fullName + ' — Checked in at ' + data.checkInTime + '.', !data.alreadyCheckedIn);
+    $('searchResults').replaceChildren(); message('saveStatus', '');
+    $('clientForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) { result(err.message, false); }
+  finally { state.loading = false; updateControls(); }
 }
 
-// "Represented by" cards: one per fresh check-in, sitting directly under the
-// Search Name / scanner area. They stay until Save or Skip, so the next scan
-// never wipes out something staff is still typing.
-function addRepCard(memberId, fullName) {
-  const queue = document.getElementById("repQueue");
-  if (!queue) return;
-  const card = document.createElement("div");
-  card.className = "rep-card";
-  card.innerHTML = `
-    <div class="rep-card-name">${esc(fullName)}</div>
-    <input type="text" placeholder="Represented by (optional)" autocomplete="off">
-    <div class="rep-card-actions">
-      <button class="btn btn-primary">Save</button>
-      <button class="btn btn-ghost">Skip</button>
-    </div>`;
-  const input = card.querySelector("input");
-  const [saveBtn, skipBtn] = card.querySelectorAll("button");
-  const save = async () => {
-    const name = input.value.trim();
-    if (!name) { card.remove(); return; }
-    saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+$('searchInput').addEventListener('input', () => {
+  clearTimeout(state.searchTimer); const sequence = ++state.searchSeq;
+  const q = $('searchInput').value.trim(); $('searchResults').replaceChildren();
+  if (!q || state.member) return;
+  state.searchTimer = setTimeout(async () => {
     try {
-      await apiPost("setRepresentative", { memberId: memberId, name: name });
-      card.remove();
-    } catch (err) {
-      saveBtn.disabled = false; saveBtn.textContent = "Save";
-      alert(err.message);
-    }
-  };
-  saveBtn.onclick = save;
-  skipBtn.onclick = () => card.remove();
-  input.onkeydown = e => { if (e.key === "Enter") save(); };
-  queue.appendChild(card);
-}
+      // Existing public search endpoint returns only the original ID/name/address.
+      const response = await fetch(APPS_SCRIPT_URL + '?api=search&q=' + encodeURIComponent(q), { credentials: 'omit', redirect: 'follow' });
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.message || 'Search failed.');
+      if (sequence !== state.searchSeq || state.member || !state.password) return;
+      $('searchResults').replaceChildren();
+      if (!data.data.length) { $('searchResults').textContent = 'No match found.'; return; }
+      data.data.forEach(member => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'search-result-item';
+        button.textContent = member.fullName + ' (' + member.memberId + ')' + (member.address ? ' — ' + member.address : '');
+        button.onclick = () => openClient(member.memberId, 'Search'); $('searchResults').appendChild(button);
+      });
+    } catch (err) { if (sequence === state.searchSeq && state.password) $('searchResults').textContent = 'Search unavailable. Check the connection and try again.'; }
+  }, 300);
+});
 
-function renderResult(res) {
-  const el = document.getElementById("checkinResult");
-  el.className = "result";
-  if (!res.ok) {
-    el.classList.add("error");
-    el.innerHTML = esc(res.message);
-  } else if (res.alreadyCheckedIn) {
-    el.classList.add("error");
-    el.innerHTML = `<span class="result-name">${esc(res.fullName)}</span>ALREADY CHECKED IN at ${esc(res.checkInTime)}.`;
-  } else {
-    el.classList.add("ok");
-    el.innerHTML = `<span class="result-name">${esc(res.fullName)}</span>Checked in at ${esc(res.checkInTime)}.`;
-    addRepCard(res.memberId, res.fullName);
-  }
-  setTimeout(() => { el.className = "result"; }, 3500);
+$('editFields').addEventListener('input', () => { state.dirty = true; message('saveStatus', 'Unsaved changes.'); });
+$('takePhotoBtn').onclick = () => { $('photoInput').value = ''; $('photoInput').click(); };
+$('removePhotoBtn').onclick = () => { clearNewPhoto(); state.dirty = true; message('saveStatus', 'Unsaved changes. Existing saved photo is kept.'); };
+
+async function compressPhoto(file) {
+  if (file.size > 25 * 1024 * 1024) throw new Error('Photo is too large. Choose a photo smaller than 25 MB.');
+  if (!/^image\//.test(file.type)) throw new Error('Please choose an image.');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image(); image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('This photo format cannot be opened. Retake it or use JPEG/PNG.'));
+      image.src = url;
+    });
+    const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    for (const quality of [.85, .72, .6, .45]) {
+      const data = canvas.toDataURL('image/jpeg', quality);
+      if (data.length <= Math.ceil(1024 * 1024 / 3) * 4 + 23) return data;
+    }
+    throw new Error('Photo is still too large. Please retake at a lower resolution.');
+  } finally { URL.revokeObjectURL(url); }
 }
+$('photoInput').addEventListener('change', async () => {
+  const file = $('photoInput').files[0]; if (!file || !state.member) return;
+  state.photoBusy = true; updateControls(); message('photoStatus', 'Preparing photo…');
+  try {
+    const data = await compressPhoto(file); state.photo = data; state.dirty = true;
+    $('photoPreview').src = data; $('photoPreview').classList.remove('hidden'); $('removePhotoBtn').classList.remove('hidden');
+    message('photoStatus', 'Photo ready. Press Save Changes to upload.'); message('saveStatus', 'Unsaved changes.');
+  } catch (err) { message('photoStatus', err.message + (state.photo ? ' The previous new photo is still selected.' : ''), 'error'); }
+  finally { state.photoBusy = false; updateControls(); }
+});
+
+function makeRequestId() {
+  const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+$('clientForm').addEventListener('submit', async event => {
+  event.preventDefault(); if (!state.member || state.saving || state.photoBusy || state.loading) return;
+  if (!state.pendingSave) {
+    if (!$('fullName').value.trim()) { $('fullName').focus(); message('saveStatus', 'Full name is required.', 'error'); return; }
+    state.pendingSave = { memberId: state.member.memberId, version: state.member.version, requestId: makeRequestId(),
+      fullName: $('fullName').value.trim(), address: $('address').value.trim(), contactNo: $('contactNo').value.trim(),
+      representativeName: $('representativeName').value.trim(), photoDataUrl: state.photo };
+  }
+  state.saving = true; updateControls(); message('saveStatus', 'Saving client data' + (state.pendingSave.photoDataUrl ? ' and uploading photo…' : '…'));
+  try {
+    const saved = await api('saveScannedMember', state.pendingSave);
+    const hadPhoto = !!state.pendingSave.photoDataUrl;
+    showProfile(saved.member);
+    message('saveStatus', saved.message || 'Saved successfully.', 'success');
+    if (hadPhoto) message('photoStatus', 'Photo saved. Use the Google Drive link above to open it.', 'success');
+    result(saved.member.fullName + ' — Details saved. Attendance: ' + saved.member.checkInTime + '.', true);
+  } catch (err) {
+    if (!err.uncertain) state.pendingSave = null;
+    message('saveStatus', err.message, 'error');
+  } finally { state.saving = false; updateControls(); }
+});
+$('reloadBtn').onclick = async () => {
+  if (!state.member || state.pendingSave || state.saving || state.photoBusy) return;
+  if (state.dirty && !confirm('Discard unsaved edits and reload this client?')) return;
+  await openClient(state.member.memberId, 'Search');
+};
+async function nextClient() {
+  if (state.pendingSave || state.saving || state.photoBusy || state.loading) return false;
+  if (state.dirty && !confirm('Discard unsaved details and the new photo? Attendance will remain recorded.')) return false;
+  state.member = null; state.dirty = false; clearNewPhoto(); $('clientForm').reset(); $('clientForm').classList.add('hidden');
+  $('checkinResult').className = 'result'; $('searchInput').value = ''; $('searchResults').replaceChildren(); updateControls(); return true;
+}
+$('nextBtn').onclick = async () => { if (await nextClient()) { if (state.mode === 'qr') await startCamera(); else $('searchInput').focus(); } };
+$('logoutBtn').onclick = async () => {
+  if (!await nextClient()) return;
+  await stopCamera(); state.password = ''; state.searchSeq++; clearTimeout(state.searchTimer);
+  $('workspace').classList.add('hidden'); $('loginForm').classList.remove('hidden'); $('staffPassword').focus();
+};
+window.addEventListener('beforeunload', event => { if (state.dirty || state.saving || state.pendingSave) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('pagehide', () => { if (state.scanner) stopCamera(); });
 </script>
 </body>
 </html>
