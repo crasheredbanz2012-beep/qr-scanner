@@ -135,7 +135,7 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 </div>
 <script>
 // Keep your existing deployment URL, or replace it if you create a new deployment.
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwU4Lq6jS0i-ZWl1thiotdgL4dnWHJy1xWu7gxv4ISCij4Knvo9o72q80AvLd64QXU-aQ/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1GUXHhMEy5ISFLq7NBxFfwAmsouIL8Fv1PHvbwkBC7fu9cQxhgnm-VobzzzfjwtoRbw/exec";
 const $ = id => document.getElementById(id);
 function isMobilePhotoFlow_() { return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
 const state = { autoResume: false, member: null, photo: '', dirty: false, saving: false, photoBusy: false,
@@ -182,6 +182,31 @@ async function api(action, params = {}) {
     } finally { clearTimeout(timer); }
   }
 }
+
+function chromeCameraBlockedMessage_() {
+  const policy = document.permissionsPolicy || document.featurePolicy;
+  if (policy && policy.allowsFeature && !policy.allowsFeature('camera')) return 'This page blocks live camera access. Open the GitHub scanner directly in Chrome, or use Search Name / Take Photo of QR.';
+  return 'Camera is blocked in Chrome. Settings > Site settings > Camera > this site > Allow (or reset permission), then Retry.';
+}
+// Query Chrome's saved decision without opening a camera or blocking startup.
+// Reset/Ask causes getUserMedia (scanner.start) to request permission again.
+// A saved Block can only be changed in Chrome/phone settings by the user.
+let chromeCameraPermission_ = null, chromeCameraPermissionRun_ = 0;
+async function watchChromeCameraPermission_(onStatus) {
+  const run = ++chromeCameraPermissionRun_;
+  if (!navigator.permissions || !navigator.permissions.query) return;
+  let timer;
+  try {
+    const permission = await Promise.race([navigator.permissions.query({name: 'camera'}), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Permission status unavailable')), 1000); })]);
+    if (run !== chromeCameraPermissionRun_) return;
+    if (chromeCameraPermission_) chromeCameraPermission_.onchange = null;
+    chromeCameraPermission_ = permission;
+    const notify = () => { if (run === chromeCameraPermissionRun_) onStatus(permission.state); };
+    permission.onchange = notify; notify();
+  } catch (_) { /* Safari/unsupported queries still request permission on Start. */ }
+  finally { clearTimeout(timer); }
+}
+window.addEventListener('pagehide', () => { chromeCameraPermissionRun_++; if (chromeCameraPermission_) chromeCameraPermission_.onchange = null; });
 
 // Each attempt uses its own reader so a late browser permission response
 // cannot overwrite a newer scanner. A web page cannot reset a saved Block.
@@ -443,6 +468,24 @@ async function nextClient() {
 $('nextBtn').onclick = async () => { if (await nextClient()) { if (state.mode === 'qr') await startCamera(); else $('searchInput').focus(); } };
 window.addEventListener('beforeunload', event => { if (state.dirty || state.saving || state.pendingSave) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('pagehide', () => { if (state.scanner) stopCamera(); });
+function paintScannerCameraPermission_(permission) {
+  state.cameraPermission = permission;
+  if (state.cameraBusy || state.scanning || state.member || state.mode !== 'qr') return;
+  if (permission === 'prompt') {
+    $('cameraRetryBtn').textContent = 'Allow Camera / Start Scanning'; $('cameraRetryBtn').classList.remove('hidden');
+    $('qrStatus').textContent = 'Camera permission is needed. Tap Allow Camera, then choose Allow in Chrome.';
+  } else if (permission === 'denied') {
+    $('cameraRetryBtn').textContent = 'Retry / Request Camera'; $('cameraRetryBtn').classList.remove('hidden'); $('cameraHelp').classList.remove('hidden');
+    $('qrStatus').textContent = chromeCameraBlockedMessage_();
+  } else if (permission === 'granted') {
+    $('cameraRetryBtn').classList.add('hidden'); $('cameraHelp').classList.add('hidden');
+    $('qrStatus').textContent = 'Camera permission is allowed. Tap Start Scanning.';
+  }
+}
+watchChromeCameraPermission_(permission => {
+  if (permission === 'denied' && (state.scanning || state.cameraBusy)) stopCamera().then(() => paintScannerCameraPermission_(permission));
+  else paintScannerCameraPermission_(permission);
+});
 </script>
 </body>
 </html>
