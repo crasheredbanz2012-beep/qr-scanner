@@ -135,7 +135,7 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 </div>
 <script>
 // Keep your existing deployment URL, or replace it if you create a new deployment.
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1GUXHhMEy5ISFLq7NBxFfwAmsouIL8Fv1PHvbwkBC7fu9cQxhgnm-VobzzzfjwtoRbw/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx49FCI0Xk_xPXjMUUHI5ckPAWFKgSTMYHqRbL-pvXg2KqCoFDkgyq0yVR62Cn9-9nU4w/exec";
 const $ = id => document.getElementById(id);
 function isMobilePhotoFlow_() { return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
 const state = { autoResume: false, member: null, photo: '', dirty: false, saving: false, photoBusy: false,
@@ -285,6 +285,7 @@ async function stopCamera() {
 async function startCamera() {
   if (state.member || state.loading || state.cameraBusy || state.scanning) return;
   const run = {}; state.cameraRun = run;
+  state.cameraEverRequested = true;
   state.cameraBusy = true; updateControls();
   $('cameraRetryBtn').classList.add('hidden'); $('qrIdleLabel').classList.add('hidden');
   $('qrStatus').textContent = 'Requesting camera… Tap Allow on the browser prompt.';
@@ -482,10 +483,25 @@ function paintScannerCameraPermission_(permission) {
     $('qrStatus').textContent = 'Camera permission is allowed. Tap Start Scanning.';
   }
 }
-watchChromeCameraPermission_(permission => {
+const initialCameraPermissionCheck_ = watchChromeCameraPermission_(permission => {
   if (permission === 'denied' && (state.scanning || state.cameraBusy)) stopCamera().then(() => paintScannerCameraPermission_(permission));
   else paintScannerCameraPermission_(permission);
 });
+// Request consent on first open after the QR library has finished loading.
+// Chrome decides whether to show a prompt; a saved Block cannot be reset here.
+async function requestCameraOnFirstOpen_() {
+  await initialCameraPermissionCheck_;
+  if (state.cameraEverRequested || state.mode !== 'qr' || state.member || state.loading || state.cameraBusy || state.scanning) return;
+  const permission = chromeCameraPermission_ && chromeCameraPermission_.state;
+  if (permission === 'granted' || permission === 'denied') return;
+  const policy = document.permissionsPolicy || document.featurePolicy;
+  if (policy && policy.allowsFeature && !policy.allowsFeature('camera')) {
+    $('qrStatus').textContent = chromeCameraBlockedMessage_(); $('cameraHelp').classList.remove('hidden'); return;
+  }
+  await startCamera();
+}
+if (document.readyState === 'complete') requestCameraOnFirstOpen_();
+else window.addEventListener('load', requestCameraOnFirstOpen_, {once: true});
 </script>
 </body>
 </html>
