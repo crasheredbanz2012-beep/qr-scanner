@@ -79,15 +79,7 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 <h1>Members Day Scanner</h1>
 <p class="sub">Scan a client, update details, and attach a photo.</p>
 <div id="configWarn" class="config-warn hidden">Set APPS_SCRIPT_URL to your Apps Script Web App /exec URL.</div>
-<form id="loginForm">
-  <label class="field" for="staffPassword">Admin password</label>
-  <input id="staffPassword" class="search-input" type="password" autocomplete="current-password" required>
-  <p class="notice">Staff access is required to view contact details, edit clients and save photos.</p>
-  <button id="loginBtn" class="btn btn-primary btn-block">Sign In</button>
-  <p id="loginStatus" class="notice" role="status"></p>
-</form>
-<div id="workspace" class="hidden">
-  <div class="session"><span class="notice">Staff scanner</span><button id="logoutBtn" class="btn btn-ghost" type="button">Sign Out</button></div>
+<div id="workspace">
   <fieldset id="scanControls">
     <div class="mode-tabs">
       <button id="tabQr" class="mode-tab active" type="button">Scan QR</button>
@@ -111,10 +103,10 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
   <div id="checkinResult" class="result" role="status" aria-live="polite"></div>
   <form id="clientForm" class="hidden">
     <h2>Client Details</h2>
-    <p class="notice">Review the details below. The Member ID stays the same so the printed QR still works.</p>
+    <p class="notice">Member ID and Full Name are locked. Update the address, contact number, representative and photo below.</p>
     <fieldset id="editFields">
       <label class="field" for="memberId">Member ID</label><input id="memberId" class="search-input" readonly>
-      <label class="field" for="fullName">Full name *</label><input id="fullName" class="search-input" required maxlength="200" autocomplete="off">
+      <label class="field" for="fullName">Full name *</label><input id="fullName" class="search-input" readonly required maxlength="200" autocomplete="off">
       <label class="field" for="address">Address</label><textarea id="address" class="search-input" maxlength="1000" autocomplete="off"></textarea>
       <label class="field" for="contactNo">Contact number</label><input id="contactNo" class="search-input" type="tel" maxlength="40" autocomplete="off">
       <label class="field" for="representativeName">Represented by (optional)</label><input id="representativeName" class="search-input" maxlength="200" autocomplete="off">
@@ -141,9 +133,9 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 </div>
 <script>
 // Keep your existing deployment URL, or replace it if you create a new deployment.
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyeSBPfRnHChd-5x8ykIRMRUKNFN2jIpiDBOzHVuXAOBKICWPvlUeNWdgeHhrr5FIjY/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz96AL4SrT4gKZJFiJL4Bi2ce-aGcBMuaRPpFOu1pXJX0HNTBYvMHprnvRNjoZbtz4rCw/exec";
 const $ = id => document.getElementById(id);
-const state = { password: '', member: null, photo: '', dirty: false, saving: false, photoBusy: false,
+const state = { member: null, photo: '', dirty: false, saving: false, photoBusy: false,
   loading: false, pendingSave: null, scanner: null, scanning: false, cameraBusy: false,
   lastCode: '', lastCodeAt: 0, facing: 'environment', mode: 'qr', searchTimer: null, searchSeq: 0 };
 if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)) $('configWarn').classList.remove('hidden');
@@ -155,15 +147,13 @@ function updateControls() {
   $('editFields').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
   $('saveBtn').disabled = state.saving || state.photoBusy || state.loading;
   $('nextBtn').disabled = $('reloadBtn').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
-  $('logoutBtn').disabled = state.saving || state.photoBusy || state.loading || !!state.pendingSave || state.cameraBusy;
   $('saveBtn').textContent = state.saving ? 'Saving…' : state.pendingSave ? 'Retry Save' : 'Save Changes';
   $('qrStartBtn').textContent = state.scanning ? 'Stop Scanning' : 'Start Scanning';
 }
 
 async function api(action, params = {}) {
-  // Same payload for both attempts, including the save reference. Password lives
-  // in this tab's memory only; no localStorage, cookies or URL secrets.
-  const body = JSON.stringify({ action, ...params, password: state.password });
+  // Same payload for both attempts, including the save reference.
+  const body = JSON.stringify({ action, ...params });
   for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), action === 'saveScannedMember' ? 90000 : 45000);
@@ -188,19 +178,6 @@ async function api(action, params = {}) {
   }
 }
 
-$('loginForm').addEventListener('submit', async event => {
-  event.preventDefault(); $('loginBtn').disabled = true;
-  state.password = $('staffPassword').value;
-  message('loginStatus', 'Signing in…');
-  try {
-    await api('scannerLogin');
-    $('staffPassword').value = '';
-    $('loginForm').classList.add('hidden'); $('workspace').classList.remove('hidden');
-    message('loginStatus', '');
-  } catch (err) { state.password = ''; message('loginStatus', err.message, 'error'); }
-  finally { $('loginBtn').disabled = false; }
-});
-
 async function stopCamera() {
   const scanner = state.scanner;
   state.scanning = false;
@@ -215,7 +192,7 @@ async function stopCamera() {
 }
 
 async function startCamera() {
-  if (state.member || state.loading || state.cameraBusy || state.scanning || !state.password) return;
+  if (state.member || state.loading || state.cameraBusy || state.scanning) return;
   if (!window.isSecureContext) { result('The camera requires HTTPS. Open the GitHub Pages HTTPS link.', false); return; }
   if (typeof Html5Qrcode === 'undefined') { result('QR scanner library did not load. Check your connection and reload.', false); return; }
   state.cameraBusy = true; updateControls();
@@ -311,7 +288,7 @@ $('searchInput').addEventListener('input', () => {
       const response = await fetch(APPS_SCRIPT_URL + '?api=search&q=' + encodeURIComponent(q), { credentials: 'omit', redirect: 'follow' });
       const data = await response.json();
       if (!data.ok) throw new Error(data.message || 'Search failed.');
-      if (sequence !== state.searchSeq || state.member || !state.password) return;
+      if (sequence !== state.searchSeq || state.member) return;
       $('searchResults').replaceChildren();
       if (!data.data.length) { $('searchResults').textContent = 'No match found.'; return; }
       data.data.forEach(member => {
@@ -319,7 +296,7 @@ $('searchInput').addEventListener('input', () => {
         button.textContent = member.fullName + ' (' + member.memberId + ')' + (member.address ? ' — ' + member.address : '');
         button.onclick = () => openClient(member.memberId, 'Search'); $('searchResults').appendChild(button);
       });
-    } catch (err) { if (sequence === state.searchSeq && state.password) $('searchResults').textContent = 'Search unavailable. Check the connection and try again.'; }
+    } catch (err) { if (sequence === state.searchSeq) $('searchResults').textContent = 'Search unavailable. Check the connection and try again.'; }
   }, 300);
 });
 
@@ -395,11 +372,6 @@ async function nextClient() {
   $('checkinResult').className = 'result'; $('searchInput').value = ''; $('searchResults').replaceChildren(); updateControls(); return true;
 }
 $('nextBtn').onclick = async () => { if (await nextClient()) { if (state.mode === 'qr') await startCamera(); else $('searchInput').focus(); } };
-$('logoutBtn').onclick = async () => {
-  if (!await nextClient()) return;
-  await stopCamera(); state.password = ''; state.searchSeq++; clearTimeout(state.searchTimer);
-  $('workspace').classList.add('hidden'); $('loginForm').classList.remove('hidden'); $('staffPassword').focus();
-};
 window.addEventListener('beforeunload', event => { if (state.dirty || state.saving || state.pendingSave) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('pagehide', () => { if (state.scanner) stopCamera(); });
 </script>
