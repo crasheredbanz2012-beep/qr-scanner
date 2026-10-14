@@ -141,11 +141,11 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 </div>
 <script>
 // Keep your existing deployment URL, or replace it if you create a new deployment.
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwbWfrebkoHJQlGztF4_HyaSY2LEwIiKOysREFufRxXyfZLbqLBOCOdFIQTxHvuz79nBQ/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzPCKV7JGNb2UXxhbkh5iszOUT1dTEKSLNtYbpGK06aoyLFhRXNf04zdmp_fO5kwBrsQg/exec";
 const $ = id => document.getElementById(id);
 const state = { password: '', member: null, photo: '', dirty: false, saving: false, photoBusy: false,
   loading: false, pendingSave: null, scanner: null, scanning: false, cameraBusy: false,
-  facing: 'environment', mode: 'qr', searchTimer: null, searchSeq: 0 };
+  lastCode: '', lastCodeAt: 0, facing: 'environment', mode: 'qr', searchTimer: null, searchSeq: 0 };
 if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)) $('configWarn').classList.remove('hidden');
 
 function message(id, text, kind = '') { $(id).textContent = text; $(id).className = 'notice ' + kind; }
@@ -226,7 +226,13 @@ async function startCamera() {
       const scanner = new Html5Qrcode('qrReader'); state.scanner = scanner;
       try {
         await scanner.start(camera, { fps: 10, qrbox: (w, h) => ({ width: Math.min(220, w * .75, h * .75), height: Math.min(220, w * .75, h * .75) }) },
-          text => { if (state.scanning && !state.loading && !state.member) openClient(String(text).trim(), 'QR'); }, () => {});
+          text => {
+            const code = String(text).trim();
+            if (!state.scanning || state.loading || state.member || !code) return;
+            if (code === state.lastCode && Date.now() - state.lastCodeAt < 5000) return;
+            state.lastCode = code; state.lastCodeAt = Date.now();
+            openClient(code, 'QR');
+          }, () => {});
         state.scanning = true; lastError = null; break;
       } catch (err) {
         lastError = err;
@@ -280,14 +286,18 @@ function showProfile(member) {
 async function openClient(memberId, method) {
   if (state.loading || state.saving || state.photoBusy || state.pendingSave) return;
   state.loading = true; state.searchSeq++; clearTimeout(state.searchTimer); updateControls();
-  await stopCamera(); result('Loading client and checking attendance…', true);
+  result('Loading client and checking attendance…', true);
   try {
     const data = await api('scanMember', { memberId, method });
+    await stopCamera();
     showProfile(data.member);
     result(data.alreadyCheckedIn ? data.fullName + ' — ALREADY CHECKED IN at ' + data.checkInTime + '. You can still update details and attach a photo.' : data.fullName + ' — Checked in at ' + data.checkInTime + '.', !data.alreadyCheckedIn);
     $('searchResults').replaceChildren(); message('saveStatus', '');
     $('clientForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } catch (err) { result(err.message, false); }
+  } catch (err) {
+    result(err.message, false);
+    if (state.scanning) $('qrStatus').textContent = 'Client could not be loaded. Scan another QR or use Search Name.';
+  }
   finally { state.loading = false; updateControls(); }
 }
 
@@ -381,7 +391,7 @@ $('reloadBtn').onclick = async () => {
 async function nextClient() {
   if (state.pendingSave || state.saving || state.photoBusy || state.loading) return false;
   if (state.dirty && !confirm('Discard unsaved details and the new photo? Attendance will remain recorded.')) return false;
-  state.member = null; state.dirty = false; clearNewPhoto(); $('clientForm').reset(); $('clientForm').classList.add('hidden');
+  state.member = null; state.dirty = false; state.lastCode = ''; state.lastCodeAt = 0; clearNewPhoto(); $('clientForm').reset(); $('clientForm').classList.add('hidden');
   $('checkinResult').className = 'result'; $('searchInput').value = ''; $('searchResults').replaceChildren(); updateControls(); return true;
 }
 $('nextBtn').onclick = async () => { if (await nextClient()) { if (state.mode === 'qr') await startCamera(); else $('searchInput').focus(); } };
