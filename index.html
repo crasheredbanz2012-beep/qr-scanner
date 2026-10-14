@@ -77,7 +77,7 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 <body>
 <div class="card">
 <h1>Members Day Scanner</h1>
-<p class="sub">Scan a client, update details, and attach a photo.</p>
+<p class="sub">Scan a client, update details, and attach a photo. On mobile, confirming the photo saves it and returns to scanning.</p>
 <div id="configWarn" class="config-warn hidden">Set APPS_SCRIPT_URL to your Apps Script Web App /exec URL.</div>
 <div id="workspace">
   <fieldset id="scanControls">
@@ -92,6 +92,8 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
         <button id="qrStartBtn" class="btn btn-primary" type="button">Start Scanning</button>
         <button id="qrSwitchBtn" class="btn btn-ghost" type="button">Switch Camera</button>
       </div>
+      <button id="cameraRetryBtn" class="btn btn-primary hidden" type="button">Retry / Request Camera</button>
+      <div id="cameraHelp" class="notice hidden" role="status">If you previously blocked Camera, open Chrome Settings &gt; Site settings &gt; Camera &gt; select this site &gt; Allow (or reset permission). Also allow Chrome to use Camera in your phone's app permissions. Reload and tap Retry / Request Camera. Open this GitHub scanner directly in Chrome or Safari.</div>
       <p class="hint">Scan the client's Member ID QR. Attendance is marked immediately; the camera then stops so you can review the details.</p>
     </div>
     <div id="searchPane" class="hidden">
@@ -133,9 +135,10 @@ input[readonly]{background:var(--bg)}@media(max-width:380px){body{padding:8px}.c
 </div>
 <script>
 // Keep your existing deployment URL, or replace it if you create a new deployment.
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz96AL4SrT4gKZJFiJL4Bi2ce-aGcBMuaRPpFOu1pXJX0HNTBYvMHprnvRNjoZbtz4rCw/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwU4Lq6jS0i-ZWl1thiotdgL4dnWHJy1xWu7gxv4ISCij4Knvo9o72q80AvLd64QXU-aQ/exec";
 const $ = id => document.getElementById(id);
-const state = { member: null, photo: '', dirty: false, saving: false, photoBusy: false,
+function isMobilePhotoFlow_() { return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
+const state = { autoResume: false, member: null, photo: '', dirty: false, saving: false, photoBusy: false,
   loading: false, pendingSave: null, scanner: null, scanning: false, cameraBusy: false,
   lastCode: '', lastCodeAt: 0, facing: 'environment', mode: 'qr', searchTimer: null, searchSeq: 0 };
 if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)) $('configWarn').classList.remove('hidden');
@@ -143,12 +146,14 @@ if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_
 function message(id, text, kind = '') { $(id).textContent = text; $(id).className = 'notice ' + kind; }
 function result(text, ok) { $('checkinResult').textContent = text; $('checkinResult').className = 'result ' + (ok ? 'ok' : 'error'); }
 function updateControls() {
-  $('scanControls').disabled = !!state.member || state.loading || state.cameraBusy;
+  $('scanControls').disabled = !!state.member || state.loading;
+  $('qrSwitchBtn').disabled = state.cameraBusy;
+  $('cameraRetryBtn').disabled = state.cameraBusy;
   $('editFields').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
   $('saveBtn').disabled = state.saving || state.photoBusy || state.loading;
   $('nextBtn').disabled = $('reloadBtn').disabled = state.saving || state.photoBusy || !!state.pendingSave || state.loading;
   $('saveBtn').textContent = state.saving ? 'Saving…' : state.pendingSave ? 'Retry Save' : 'Save Changes';
-  $('qrStartBtn').textContent = state.scanning ? 'Stop Scanning' : 'Start Scanning';
+  $('qrStartBtn').textContent = state.cameraBusy ? 'Cancel Camera Startup' : state.scanning ? 'Stop Scanning' : 'Start Scanning';
 }
 
 async function api(action, params = {}) {
@@ -178,59 +183,114 @@ async function api(action, params = {}) {
   }
 }
 
-async function stopCamera() {
-  const scanner = state.scanner;
-  state.scanning = false;
-  if (scanner) {
-    try { await scanner.stop(); } catch (_) {}
+// Each attempt uses its own reader so a late browser permission response
+// cannot overwrite a newer scanner. A web page cannot reset a saved Block.
+const CAMERA_START_TIMEOUT_MS = 15000;
+let cameraHostSequence_ = 0;
+function cameraFailure_(name, message) { const e = new Error(message); e.name = name; return e; }
+function cameraPreflight_() {
+  if (!window.isSecureContext) throw cameraFailure_('SecurityError', 'Open this scanner using its HTTPS link.');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw cameraFailure_('CameraUnavailable', 'Open the scanner in Chrome or Safari. Camera access is unavailable in this browser.');
+  const policy = document.permissionsPolicy || document.featurePolicy;
+  if (policy && policy.allowsFeature && !policy.allowsFeature('camera')) throw cameraFailure_('CameraPolicyError', 'This page blocks live camera access. Open the GitHub scanner directly in Chrome, or use Take Photo of QR / Search Name.');
+  if (typeof Html5Qrcode === 'undefined') throw cameraFailure_('LibraryError', 'QR scanner did not load. Check your connection and reload.');
+}
+function cameraErrorText_(err) {
+  const text = String(err && (err.name || err.message) ? (err.name || '') + ' ' + (err.message || '') : err);
+  if (/CameraTimeout/.test(text)) return 'Camera did not start within 15 seconds. Answer the browser Camera prompt, then tap Retry / Request Camera. If no prompt appears, allow Camera in browser settings.';
+  if (/NotAllowed|PermissionDenied|permission denied/i.test(text)) return 'Camera permission is blocked. Chrome: Settings > Site settings > Camera > select this site > Allow (or reset its permission), then tap Retry / Request Camera.';
+  if (/NotReadable|TrackStart/.test(text)) return 'Camera is busy. Close other camera apps or tabs, then tap Retry / Request Camera.';
+  if (/NotFound|DevicesNotFound/.test(text)) return 'No camera was found. Connect or enable a camera, or use Search Name.';
+  return err && err.message || 'Unable to open the camera. Check browser and phone Camera permissions, then retry.';
+}
+function cameraMayRetryMode_(err) {
+  return /Overconstrained|ConstraintNotSatisfied|NotFound|DevicesNotFound/.test(String(err && (err.name || err.message) ? (err.name || '') + ' ' + (err.message || '') : err));
+}
+async function releaseCameraScanner_(scanner, host) {
+  if (host) host.querySelectorAll('video').forEach(video => {
+    const stream = video.srcObject;
+    if (stream && stream.getTracks) stream.getTracks().forEach(track => track.stop());
+  });
+  let timer;
+  try {
+    await Promise.race([Promise.resolve().then(() => scanner.stop()).catch(() => {}), new Promise(resolve => { timer = setTimeout(resolve, 2000); })]);
     try { scanner.clear(); } catch (_) {}
-    if (state.scanner === scanner) state.scanner = null;
+  } finally { clearTimeout(timer); if (host) host.remove(); }
+}
+function startCameraAttempt_(camera, config, onDecode) {
+  const host = document.createElement('div');
+  host.id = 'camera-attempt-' + (++cameraHostSequence_);
+  host.style.width = '100%';
+  document.getElementById('qrReader').appendChild(host);
+  const scanner = new Html5Qrcode(host.id);
+  let active = true, timer, rejectWait;
+  const attempt = { scanner, host, cancel: () => finish(cameraFailure_('CameraCancelled', 'Camera startup cancelled.')) };
+  function finish(err) {
+    if (!active) return;
+    active = false; clearTimeout(timer);
+    host.querySelectorAll('video').forEach(video => { if (video.srcObject && video.srcObject.getTracks) video.srcObject.getTracks().forEach(track => track.stop()); });
+    host.remove(); rejectWait(err);
   }
-  $('qrIdleLabel').classList.remove('hidden');
-  $('qrStatus').textContent = 'Camera is off.';
-  updateControls();
+  attempt.promise = new Promise((resolve, reject) => {
+    rejectWait = reject;
+    timer = setTimeout(() => finish(cameraFailure_('CameraTimeout', 'Camera startup timed out.')), CAMERA_START_TIMEOUT_MS);
+    Promise.resolve().then(() => {
+      if (!active) throw cameraFailure_('CameraCancelled', 'Camera startup cancelled.');
+      return scanner.start(camera, config, text => { if (active) onDecode(text); }, () => {});
+    }).then(() => {
+      if (!active) { releaseCameraScanner_(scanner, host); return; }
+      clearTimeout(timer); resolve(scanner);
+    }, err => {
+      if (active) finish(err);
+      releaseCameraScanner_(scanner, host);
+    });
+  });
+  return attempt;
 }
 
+async function stopCamera() {
+  const attempt = state.cameraAttempt, scanner = state.scanner;
+  state.cameraRun = null; state.cameraAttempt = null;
+  state.scanning = false; state.cameraBusy = false; state.scanner = null;
+  if (attempt) attempt.cancel();
+  $('qrIdleLabel').classList.remove('hidden'); $('qrStatus').textContent = 'Camera is off.';
+  updateControls();
+  if (scanner) await releaseCameraScanner_(scanner, attempt && attempt.host);
+}
 async function startCamera() {
   if (state.member || state.loading || state.cameraBusy || state.scanning) return;
-  if (!window.isSecureContext) { result('The camera requires HTTPS. Open the GitHub Pages HTTPS link.', false); return; }
-  if (typeof Html5Qrcode === 'undefined') { result('QR scanner library did not load. Check your connection and reload.', false); return; }
+  const run = {}; state.cameraRun = run;
   state.cameraBusy = true; updateControls();
-  $('qrIdleLabel').classList.add('hidden'); $('qrStatus').textContent = 'Starting camera…';
-  let lastError;
+  $('cameraRetryBtn').classList.add('hidden'); $('qrIdleLabel').classList.add('hidden');
+  $('qrStatus').textContent = 'Requesting camera… Tap Allow on the browser prompt.';
   try {
-    for (const camera of [{ facingMode: { exact: state.facing } }, { facingMode: state.facing }]) {
-      const scanner = new Html5Qrcode('qrReader'); state.scanner = scanner;
-      try {
-        await scanner.start(camera, { fps: 10, qrbox: (w, h) => ({ width: Math.min(220, w * .75, h * .75), height: Math.min(220, w * .75, h * .75) }) },
-          text => {
-            const code = String(text).trim();
-            if (!state.scanning || state.loading || state.member || !code) return;
-            if (code === state.lastCode && Date.now() - state.lastCodeAt < 5000) return;
-            state.lastCode = code; state.lastCodeAt = Date.now();
-            openClient(code, 'QR');
-          }, () => {});
-        state.scanning = true; lastError = null; break;
-      } catch (err) {
-        lastError = err;
-        try { await scanner.stop(); } catch (_) {}
-        try { scanner.clear(); } catch (_) {}
-        state.scanner = null;
-        if (/NotAllowed|Permission/i.test(String(err))) break;
-      }
+    cameraPreflight_();
+    for (const camera of [{facingMode: state.facing}, {facingMode: state.facing === 'environment' ? 'user' : 'environment'}]) {
+      const attempt = startCameraAttempt_(camera, {fps: 10, qrbox: (w,h) => ({width: Math.min(220,w*.75,h*.75), height: Math.min(220,w*.75,h*.75)})}, text => {
+        const code = String(text).trim();
+        if (!state.scanning || state.loading || state.member || !code) return;
+        if (code === state.lastCode && Date.now() - state.lastCodeAt < 5000) return;
+        state.lastCode = code; state.lastCodeAt = Date.now(); openClient(code, 'QR');
+      });
+      state.cameraAttempt = attempt; state.scanner = attempt.scanner;
+      try { await attempt.promise; break; }
+      catch (err) { if (!cameraMayRetryMode_(err) || state.cameraRun !== run) throw err; }
+      if (camera.facingMode !== state.facing) throw cameraFailure_('NotFoundError', 'No usable camera found.');
     }
-    if (lastError) throw lastError;
+    if (state.cameraRun !== run) return;
+    state.scanning = true; $('cameraHelp').classList.add('hidden');
     $('qrStatus').textContent = 'Point the camera at the client’s QR code.';
   } catch (err) {
-    state.scanning = false; $('qrIdleLabel').classList.remove('hidden');
-    $('qrStatus').textContent = 'Camera unavailable. Allow camera access in your browser or use Search Name.';
-    result('Could not open the camera. Close other camera apps and check this site’s camera permission.', false);
-  } finally { state.cameraBusy = false; updateControls(); }
+    if (state.cameraRun !== run) return;
+    state.scanning = false; state.scanner = null; $('qrIdleLabel').classList.remove('hidden');
+    $('cameraRetryBtn').classList.remove('hidden'); $('cameraHelp').classList.remove('hidden');
+    $('qrStatus').textContent = cameraErrorText_(err); result(cameraErrorText_(err), false);
+  } finally { if (state.cameraRun === run) { state.cameraBusy = false; updateControls(); } }
 }
+$('cameraRetryBtn').onclick = async () => { await stopCamera(); await startCamera(); };
 
 async function switchMode(mode) {
-  if (state.member || state.loading || state.cameraBusy) return;
-  state.cameraBusy = true; updateControls();
+  if (state.member || state.loading) return;
   await stopCamera(); state.mode = mode;
   $('tabQr').classList.toggle('active', mode === 'qr'); $('tabSearch').classList.toggle('active', mode === 'search');
   $('qrPane').classList.toggle('hidden', mode !== 'qr'); $('searchPane').classList.toggle('hidden', mode !== 'search');
@@ -238,7 +298,7 @@ async function switchMode(mode) {
   if (mode === 'search') $('searchInput').focus();
 }
 $('tabQr').onclick = () => switchMode('qr'); $('tabSearch').onclick = () => switchMode('search');
-$('qrStartBtn').onclick = async () => { if (state.scanning) { state.cameraBusy = true; updateControls(); await stopCamera(); state.cameraBusy = false; updateControls(); } else await startCamera(); };
+$('qrStartBtn').onclick = async () => { if (state.scanning || state.cameraBusy) { await stopCamera(); } else await startCamera(); };
 $('qrSwitchBtn').onclick = async () => {
   if (state.member || state.cameraBusy || state.loading) return;
   state.cameraBusy = true; updateControls(); await stopCamera();
@@ -252,7 +312,7 @@ function clearNewPhoto() {
   message('photoStatus', 'No new photo selected.');
 }
 function showProfile(member) {
-  state.member = member; state.dirty = false; state.pendingSave = null; clearNewPhoto();
+  state.autoResume = false; state.member = member; state.dirty = false; state.pendingSave = null; clearNewPhoto();
   ['memberId', 'fullName', 'address', 'contactNo', 'representativeName'].forEach(key => { $(key).value = member[key] || ''; });
   const url = member.photoUrl || '';
   const safe = /^https:\/\/drive\.google\.com\//.test(url);
@@ -326,32 +386,37 @@ async function compressPhoto(file) {
 }
 $('photoInput').addEventListener('change', async () => {
   const file = $('photoInput').files[0]; if (!file || !state.member) return;
+  let ready = false;
   state.photoBusy = true; updateControls(); message('photoStatus', 'Preparing photo…');
   try {
-    const data = await compressPhoto(file); state.photo = data; state.dirty = true;
+    const data = await compressPhoto(file); state.photo = data; state.dirty = true; ready = true;
     $('photoPreview').src = data; $('photoPreview').classList.remove('hidden'); $('removePhotoBtn').classList.remove('hidden');
-    message('photoStatus', 'Photo ready. Press Save Changes to upload.'); message('saveStatus', 'Unsaved changes.');
+    message('photoStatus', isMobilePhotoFlow_() ? 'Photo ready. Saving automatically…' : 'Photo ready. Press Save Changes to upload.'); message('saveStatus', 'Unsaved changes.');
   } catch (err) { message('photoStatus', err.message + (state.photo ? ' The previous new photo is still selected.' : ''), 'error'); }
   finally { state.photoBusy = false; updateControls(); }
+  if (ready && isMobilePhotoFlow_()) await saveClient(true);
 });
 
 function makeRequestId() {
   const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
-$('clientForm').addEventListener('submit', async event => {
-  event.preventDefault(); if (!state.member || state.saving || state.photoBusy || state.loading) return;
+$('clientForm').addEventListener('submit', event => { event.preventDefault(); saveClient(); });
+async function saveClient(resume = false) {
+  if (resume) state.autoResume = true;
+  if (!state.member || state.saving || state.photoBusy || state.loading) return;
   if (!state.pendingSave) {
     if (!$('fullName').value.trim()) { $('fullName').focus(); message('saveStatus', 'Full name is required.', 'error'); return; }
     state.pendingSave = { memberId: state.member.memberId, version: state.member.version, requestId: makeRequestId(),
       fullName: $('fullName').value.trim(), address: $('address').value.trim(), contactNo: $('contactNo').value.trim(),
       representativeName: $('representativeName').value.trim(), photoDataUrl: state.photo };
   }
+  const shouldResume = state.autoResume; let success = false;
   state.saving = true; updateControls(); message('saveStatus', 'Saving client data' + (state.pendingSave.photoDataUrl ? ' and uploading photo…' : '…'));
   try {
     const saved = await api('saveScannedMember', state.pendingSave);
     const hadPhoto = !!state.pendingSave.photoDataUrl;
-    showProfile(saved.member);
+    showProfile(saved.member); success = true;
     message('saveStatus', saved.message || 'Saved successfully.', 'success');
     if (hadPhoto) message('photoStatus', 'Photo saved. Use the Google Drive link above to open it.', 'success');
     result(saved.member.fullName + ' — Details saved. Attendance: ' + saved.member.checkInTime + '.', true);
@@ -359,7 +424,11 @@ $('clientForm').addEventListener('submit', async event => {
     if (!err.uncertain) state.pendingSave = null;
     message('saveStatus', err.message, 'error');
   } finally { state.saving = false; updateControls(); }
-});
+  if (success && shouldResume && await nextClient()) {
+    await switchMode('qr'); result('Photo saved. Ready for the next client.', true);
+    $('qrPane').scrollIntoView({behavior: 'smooth', block: 'start'}); await startCamera();
+  }
+}
 $('reloadBtn').onclick = async () => {
   if (!state.member || state.pendingSave || state.saving || state.photoBusy) return;
   if (state.dirty && !confirm('Discard unsaved edits and reload this client?')) return;
